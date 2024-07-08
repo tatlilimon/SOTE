@@ -1,0 +1,13 @@
+data-dir-*
+
+unneccesary/
+
+localDB.db
+
+curls/
+
+logs/
+
+server.crt
+
+server.key
