@@ -1,3 +1,5 @@
+![sote-logo](https://github.com/tatlilimon/SOTE/assets/43828285/4284dfcc-a4e7-4bf6-ae0e-b243a10439a0)
+
 # SOTE
 A messaging client with end-to-end encryption, no central server, self-hosted, communicates over the Tor network and can't be censored. 
 
