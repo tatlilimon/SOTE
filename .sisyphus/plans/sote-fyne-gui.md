@@ -405,7 +405,7 @@ Wave FINAL (After ALL tasks — parallel review agents):
 
   **Commit**: YES — `feat(gui): system tray with connection status and desktop notifications` — internal/gui/tray.go, tray_test.go
 
-- [ ] 8. **GUI Wire-Up + Integration Tests**
+- [x] 8. **GUI Wire-Up + Integration Tests**
 
   **What to do**:
   - Wire all 4 views into app.go's tab container

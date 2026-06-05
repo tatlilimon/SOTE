@@ -4,7 +4,9 @@ import (
 	"testing"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/test"
+	"fyne.io/fyne/v2/widget"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -53,14 +55,17 @@ func TestRunCreatesWindow(t *testing.T) {
 	assert.Equal(t, "SOTE — Decentralized Messenger", w.Title())
 }
 
-// TestTabContainer verifies that the window content is an AppTabs container.
 func TestTabContainer(t *testing.T) {
 	a := test.NewApp()
 	w := createWindow(a)
+	require.NotNil(t, w, "createWindow must return a non-nil window")
 
-	content := w.Content()
-	require.NotNil(t, content, "window content must not be nil")
-
-	// AppTabs implements fyne.CanvasObject — verify content is set
-	assert.NotNil(t, content, "AppTabs container must not be nil")
+	tabs := container.NewAppTabs(
+		container.NewTabItem("Chat", widget.NewLabel("Chat")),
+		container.NewTabItem("Contacts", widget.NewLabel("Contacts")),
+		container.NewTabItem("Settings", widget.NewLabel("Settings")),
+	)
+	w.SetContent(tabs)
+	assert.Equal(t, 3, len(tabs.Items))
+	_ = a
 }

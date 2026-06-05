@@ -45,6 +45,15 @@
       "agent": "Sisyphus-Junior",
       "category": "deep",
       "updated_at": "2026-06-05T15:05:54.968Z"
+    },
+    "todo:8": {
+      "task_key": "todo:8",
+      "task_label": "8",
+      "task_title": "**GUI Wire-Up + Integration Tests**",
+      "session_id": "ses_167adb6ecffeQQNXVt06k66nxs",
+      "agent": "Sisyphus-Junior",
+      "category": "deep",
+      "updated_at": "2026-06-05T15:23:40.406Z"
     }
   }
 }
