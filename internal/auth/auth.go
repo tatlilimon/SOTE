@@ -116,9 +116,9 @@ func (s *AuthService) Login(ctx context.Context, username, password string) (*do
 	}, nil
 }
 
-// hashPassword hashes a password using bcrypt with the default cost.
+// hashPassword hashes a password using bcrypt with cost ≥ 12.
 func hashPassword(password string) (string, error) {
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), 12)
 	if err != nil {
 		return "", err
 	}

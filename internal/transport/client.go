@@ -161,7 +161,11 @@ func (c *Client) tlsConfig() *tls.Config {
 	if c.expectedFingerprint != "" {
 		return &tls.Config{
 			MinVersion:         tls.VersionTLS12,
-			InsecureSkipVerify: true, //nolint:gosec // fingerprint is trust anchor
+			// InsecureSkipVerify is required for Tor .onion fingerprint verification.
+			// Go TLS calls VerifyConnection AFTER chain verification — self-signed
+			// Tor certs fail chain verification before VerifyConnection runs.
+			// Security: VerifyConnection below performs exact SHA-256 fingerprint match.
+			InsecureSkipVerify: true, //nolint:gosec // Tor fingerprint trust anchor
 			VerifyConnection: func(cs tls.ConnectionState) error {
 				if len(cs.PeerCertificates) == 0 {
 					return &ErrNetwork{Op: "fingerprint-verify", Err: fmt.Errorf("no peer certificate")}

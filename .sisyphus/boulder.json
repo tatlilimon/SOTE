@@ -2,10 +2,18 @@
   "active_plan": "/home/rootatar/Documents/my-projects/SOTE/.sisyphus/plans/sote-rewrite.md",
   "started_at": "2026-06-05T09:16:07.939Z",
   "session_ids": [
-    "ses_16aedc538ffe3OeINurnzSzJ22"
+    "ses_16aedc538ffe3OeINurnzSzJ22",
+    "ses_168780b5fffeS0SMNaZdEyr2jd",
+    "ses_16877f734ffe0ZCLjNfjpAq5VF",
+    "ses_16877dc9effetEAGqr5vLob17O",
+    "ses_16877a7d8ffejwTFOE16Jrr4QW"
   ],
   "session_origins": {
-    "ses_16aedc538ffe3OeINurnzSzJ22": "direct"
+    "ses_16aedc538ffe3OeINurnzSzJ22": "direct",
+    "ses_168780b5fffeS0SMNaZdEyr2jd": "appended",
+    "ses_16877f734ffe0ZCLjNfjpAq5VF": "appended",
+    "ses_16877dc9effetEAGqr5vLob17O": "appended",
+    "ses_16877a7d8ffejwTFOE16Jrr4QW": "appended"
   },
   "plan_name": "sote-rewrite",
   "agent": "atlas",
@@ -81,6 +89,14 @@
       "agent": "Sisyphus-Junior",
       "category": "deep",
       "updated_at": "2026-06-05T11:25:03.275Z"
+    },
+    "final-wave:f1": {
+      "task_key": "final-wave:f1",
+      "task_label": "F1",
+      "task_title": "**Plan Compliance Audit** — `oracle`",
+      "session_id": "ses_16877dc9effetEAGqr5vLob17O",
+      "agent": "oracle",
+      "updated_at": "2026-06-05T11:30:10.618Z"
     }
   }
 }
