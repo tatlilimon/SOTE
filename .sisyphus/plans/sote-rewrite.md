@@ -1687,7 +1687,7 @@ Wave FINAL (After ALL tasks — parallel review agents):
   - Message: `feat(shutdown): graceful shutdown with signal handling and resource cleanup`
   - Files: `cmd/sote/main.go`, `cmd/sote/main_test.go`
 
-- [ ] 23. **Integration Tests**
+- [x] 23. **Integration Tests**
 
   **What to do**:
   - Create `internal/integration/` package with end-to-end tests

@@ -72,6 +72,15 @@
       "agent": "Sisyphus-Junior",
       "category": "quick",
       "updated_at": "2026-06-05T11:10:00.137Z"
+    },
+    "todo:23": {
+      "task_key": "todo:23",
+      "task_label": "23",
+      "task_title": "**Integration Tests**",
+      "session_id": "ses_168843c6affeW61VsuzwxAsa00",
+      "agent": "Sisyphus-Junior",
+      "category": "deep",
+      "updated_at": "2026-06-05T11:25:03.275Z"
     }
   }
 }

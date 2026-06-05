@@ -636,3 +636,28 @@
 - ✅ Startup message: "SOTE daemon running on port {port}. Onion address: {addr}. PID: {pid}"
 - ✅ Contact requests auto-accepted in daemon mode (verified by TestDaemonModeHTTPEndpoints)
 - ✅ Race detector clean on all tests
+
+## Task 23: Integration Tests (2026-06-05)
+
+### Key Decisions
+1. **Private key format incompatibility**: `auth.encryptAES` uses a 16-byte salt prefix (PBKDF2, 100k iterations), but `crypto.Service.EncryptAES` uses a 32-byte salt prefix. Since `messages.FetchMessages` → `crypto.DecryptMessage` → `crypto.DecryptAES` expects the 32-byte salt format, auth-generated private keys are incompatible with GPG message decryption out of the box. Resolution: `reEncryptPrivateKey()` helper in tests decrypts the auth-format key and re-encrypts with crypto format.
+
+2. **Password change and AES self-copies**: Messages sent by a user generate an AES-encrypted self-copy (`encTypeAES`, prefixed 0x02) using the raw password as the encryption key. After password change, these AES copies are permanently undecryptable — the old password-derived key is lost. GPG-encrypted copies (for the receiver, prefixed 0x01) survive password change because they use the private key (which is re-encrypted with the new password). TestPasswordChangeAndRelogin uses Bob→Alice messages (GPG path) to verify survivability.
+
+3. **Daemon message simulation**: Two separate in-memory SQLite DBs simulate two daemon instances. Transport is simulated by extracting the GPG-encrypted blob (0x01 prefix stripped) from sender's DB via `storage.GetMessages` and delivering it to the receiver's DB via `messages.ReceiveMessage`. No real HTTP/Tor needed.
+
+4. **Concurrent message safety**: 10 goroutines sending messages simultaneously, verified with WaitGroup + error channel. Then messages are fetched and counted via both Alice's and Bob's views to confirm no DB corruption or lost messages.
+
+5. **Build tag**: `//go:build integration` separates these from unit tests. Run with `go test -race -tags=integration ./internal/integration/`.
+
+### Test Results
+- **5 tests, all PASS** with `-race -count=1`
+  - TestFullMessageRoundtrip (3.16s): Two users → contacts → send → fetch → GPG decrypt → AES decrypt
+  - TestContactRequestFlow (1.73s): A adds B → B accepts → both have each other
+  - TestDaemonMessageFlow (3.19s): Two DB instances → cross-instance send → receive → decrypt
+  - TestConcurrentMessages (9.61s): 10 goroutine sends → all 10 decrypted from both views
+  - TestPasswordChangeAndRelogin (12.69s): Change password → old PW rejected → re-login → old GPG messages decrypt → new messages work
+
+### Issues Encountered
+- **Initial password change test failure**: Used `decryptAuthFormat` after `reEncryptPrivateKey` had already converted the key to crypto format (32-byte salt). Fixed by using `cryptoSvc.DecryptAES` for the post-reencrypt key.
+- **AES self-copy non-survivability**: First implementation tried to verify Alice's own sent messages survived password change, but they use AES encryption with old password. Changed test to use Bob→Alice GPG messages which correctly survive via private key re-encryption.
