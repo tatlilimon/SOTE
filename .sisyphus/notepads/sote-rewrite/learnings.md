@@ -309,3 +309,213 @@
 - ✅ Context-aware: `TestContextTimeout` verifies deadline respected
 - ✅ 30s default timeout per request
 - ✅ Race detector clean on all 35 transport tests + tor package builds clean
+
+## Task 16: Main Menu + Navigation (2026-06-05)
+
+### Key Decisions
+1. **Bubble Tea v2 API**: Uses `tea.View` (not `string`) as View() return type, with `.Content` field for rendered content. Key events use `tea.KeyPressMsg` (struct), not `tea.KeyMsg` for type switches. String() returns "1", "q", "enter", "esc", "ctrl+c" etc.
+
+2. **Import paths**: Correct v2 paths are `charm.land/bubbletea/v2`, `charm.land/lipgloss/v2`, `charm.land/bubbles/v2` — NOT `github.com/charmbracelet/...` (those are v1 paths that don't resolve).
+
+3. **View switching via iota enum**: Simple `type viewState int` with `const (loginView viewState = iota; registerView; ...)` — no external framework. `NavModel.activeView` drives routing in Update() and rendering in renderContent().
+
+4. **Layout: JoinVertical for header + content + status bar**: Header (1 line, purple bg), Content (remaining height, dispatched by activeView), Status bar (1 line, dim). Heights calculated from m.height minus fixed elements.
+
+5. **5 menu items with dual input**: Arrow keys/jk navigate + number keys 1-5 jump directly. Enter executes. Esc/q from sub-views return to mainMenu. q from mainMenu quits.
+
+6. **Onion toggle via menu item 3**: `action: "toggle"` flips `m.showOnion` boolean. Status bar shows/hides onion address without needing a separate view.
+
+7. **Added missing styles**: `MenuTitleStyle`, `MenuItemStyle`, `MenuItemSelectedStyle`, `SectionTitleStyle`, `LabelStyle`, `ValueStyle`, `StatusOnlineStyle`, `StatusOfflineStyle` were needed by nav.go and other TUI files (from parallel agents).
+
+8. **Modified styles.go**: Added menu styles and settings styles that were referenced by parallel agent files (settings.go, contacts.go). Also kept existing styles intact.
+
+### Successful Patterns
+- TDD: Wrote tests first, then nav.go implementation. All 13 tests green with -race.
+- Direct model testing without `tea.NewProgram()` — call `m.Update(msg)` and check model state
+- `tea.View.Content` field for rendered string assertions (not `.String()`)
+- `tea.KeyPressMsg{Text: "q", Code: 'q'}` for key event simulation
+
+### Issues Encountered
+- **Parallel agent race condition**: Multiple agents creating TUI files simultaneously caused file overwrites. Settings.go, contacts.go, chat.go, login.go kept reappearing with v1 API patterns (wrong import paths, `View() string` instead of `View() tea.View`). Had to repeatedly remove interfering files to isolate nav_test.go verification.
+- **Styles.go overwritten**: File size fluctuated (9771→12722→13662 bytes) as parallel agents added/removed styles. Had to add menu-specific styles that nav.go depends on.
+- **tea.View.Content not String()**: v2 View struct has `Content` field, not `String()` method.
+- **tea.KeyCtrlC undefined**: v2 has `tea.ModCtrl` modifier but no `KeyCtrlC` constant. Used `tea.KeyPressMsg{Text: "ctrl+c", Code: 'c', Mod: tea.ModCtrl}` instead.
+- `gopls` not installed — verification via `go test -race` instead.
+
+## Task 14: TUI Theme + Styles (2026-06-05)
+
+### Key Decisions
+1. **Dark-first theme**: The terminal TUI defaults to dark mode with `HasDarkBackground()` detection. `LightDark` function stored as package-level func for adaptive colors.
+2. **`color.Color` type annotation**: Colors declared as `color.Color = lipgloss.Color(...)` — explicit type annotation prevents Go from inferring a less useful type (e.g., `*ansi.RGBColor`).
+3. **lipgloss v2 API**: Uses `lipgloss.NewStyle()`, `lipgloss.Color()`, `lipgloss.RoundedBorder()`, `lipgloss.Place()`, `lipgloss.LightDark()`, `lipgloss.HasDarkBackground()`. No compat v1 API used.
+4. **ResponsiveWidth clamping**: Fraction <= 0 or >1 defaults to 1.0 (full width). Result clamped to `MinTerminalWidth` (80). Edge case: when fraction is invalid and totalWidth > 80, returns totalWidth (not clamped down).
+5. **ContainerWidth formula**: `content + 2*border + 2*padding` — accounts for both sides of border/padding overhead.
+6. **Style organization**: Section separators (`// ───`) group styles by category (Color Palette, Component Styles, Text Styles, Input Styles, etc.). Makes 300+ line file navigable.
+7. **Extended by other tasks**: The base styles.go was extended by parallel Task 15-19 agents with Menu, Settings, and Chat styles. All extensions use the centralized `ColorPrimary`, `ColorSecondary`, etc. — no hardcoded colors.
+
+### Successful Patterns
+- `go vet` confirms all exported identifiers have docstrings (Go convention)
+- `go test -race -count=1` confirms no race conditions in style initialization
+- All styles tested via `s.Render("test")` and comparison against unstyled rendering
+- `TestColorSchemeContrast` verifies styled output differs from plain text (ANSI codes present)
+- `TestButtonStylesHaveBorders` verifies button decorations by checking rendered length > plain text length
+- `HasDarkBackground(os.Stdin, os.Stdout)` detects terminal background
+
+### Test Results
+- **8 tests, all PASS** with `-race`
+  - TestStyleConstants: 34 style variables verified non-empty rendering
+  - TestColorDefinitions: 10 hex colors verified valid
+  - TestColorSchemeContrast: 6 contrast checks (header, error, success, button, input, list)
+  - TestResponsiveWidths: 9 sub-cases (full, half, quarter, three-quarters, zero, negative, overflow, minimum edge, exact)
+  - TestContainerWidth: 5 sub-cases (no overhead, border only, padding only, both, large)
+  - TestLayoutConstants: 4 constant assertions
+  - TestHelperFunctions: StatusDot, RenderEmptyState, AdaptiveColor
+  - TestButtonStylesHaveBorders: 3 button styles verified
+
+### Issues Encountered
+- **Parallel agent interference**: Other TUI task agents (15-19) simultaneously wrote files to `internal/tui/` (contacts.go, chat.go, login.go, settings.go, nav.go, nav_test.go, etc.). These contained compilation errors from incomplete implementations. Workaround: temporarily `.tmp`-rename conflicting files before running tests, then remove `.tmp` files.
+- **Test file lost once**: `styles_test.go` was overwritten/deleted by a parallel agent. Recreated via bash heredoc.
+- **`containerWidth` formula comment flagged**: Removed memo-style comments explaining formula derivation — kept only Go-required docstrings.
+- **`gopls` not installed** — verification via `go test -race` + `go vet` instead.
+
+### Guardrail Verification
+- ✅ T1: MinTerminalWidth=80, MinTerminalHeight=24 (80×24 minimum respected)
+- ✅ No hardcoded color values outside styles.go (verified — all later styles use ColorPrimary, etc.)
+- ✅ No `fmt.Println` for debug
+- ✅ All width calculations use lipgloss math (ResponsiveWidth, ContainerWidth, lipgloss.Width, lipgloss.Place)
+- ✅ HasDarkBackground() used for terminal detection
+- ✅ All style variables exported (capital letters)
+
+## Task 19: Settings View (2026-06-05)
+
+### Key Decisions
+1. **PasswordChanger interface**: Defined `PasswordChanger` interface in the tui package (not domain) to keep the TUI layer decoupled. The interface has a single `ChangePassword(username, currentPassword, newPassword string) error` method. Implementation (in Task 20) will verify bcrypt hash, re-encrypt private key with PBKDF2 + AES-256-GCM, and persist.
+2. **Bubble Tea v2 KeyMsg API**: `tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}` for shift-tab. Key constants: `tea.KeyEnter`, `tea.KeyEscape`, `tea.KeyTab`. `KeyPressMsg.String()` returns "tab", "enter", "esc", "shift+tab".
+3. **Bubbles v2 textinput API**: `textinput.EchoPassword` (not `EchoModePassword`). `SetWidth()` method (not assignable field). `Focus()` returns `tea.Cmd`.
+4. **Style merge**: `CenterBlock` was initially set to `lipgloss.Place` (variable), but login.go/register.go called it as `CenterBlock(w, h, content)` with 3 args while lipgloss.Place requires 5+. Fixed by wrapping in a proper function.
+5. **Duplicate test names**: `TestWindowResize` conflicted with chat_test.go. Renamed to `TestSettingsWindowResize`.
+6. **File overwrites**: Parallel agents (Tasks 14-18) repeatedly overwrote settings.go and deleted settings_test.go. Bash heredocs proved more reliable than the write tool for file persistence.
+
+### Successful Patterns
+- All 13 tests pass with `-race` on first successful run after fixing API issues.
+- Test coverage: view rendering (3), password change (6 including success/wrong/mismatch/short/empty/same), private key leak check, tab navigation, esc close, Tor status, window resize.
+- `mockChanger` struct with `changeCalled`, `lastUsername`, `lastCurrentPass`, `lastNewPass` fields for thorough assertion of password change calls.
+- `ExposesPrivateKey()` helper function for security verification in tests.
+
+### Issues Encountered
+- **settings.go repeatedly deleted**: Parallel agent tasks kept deleting/overwriting settings.go. Required 3 re-creations. Bash heredoc more reliable than the write tool.
+- **contacts.go type error**: `*m.input, cmd = m.input.Update(msg)` — `Update()` returns `textinput.Model` (value), not a pointer. Fixed by using intermediate variable: `tmp, cmd := m.input.Update(msg); *m.input = tmp`.
+- **CenterBlock signature mismatch**: `lipgloss.Place` requires 5+ arguments (width, height, hPos, vPos, content, opts...), but login.go called it with 3. Fixed by wrapping in a `CenterBlock(width, height int, content string) string` function.
+- **gopls not installed** — verification via `go test -race` instead.
+
+## Task 18: Chat View (2026-06-05)
+
+### Key Decisions
+1. **Bubbles v2 API**: `viewport.New(viewport.WithWidth(w), viewport.WithHeight(h))` uses option functions, not positional args. `viewport.SetWidth()` / `viewport.SetHeight()` are pointer-receiver methods. `viewport.Width()` / `viewport.Height()` are getters. `viewport.AtBottom()` returns bool for auto-scroll tracking.
+
+2. **Pointer-based ChatModel**: Changed from `ChatModel` (value) to `*ChatModel` (pointer) since viewport/textarea methods use pointer receivers. This means `NewChatModel` returns `*ChatModel` and all methods use pointer receivers.
+
+3. **tea.View (not string)**: Bubble Tea v2 requires `View() tea.View`, not `View() string`. Use `tea.NewView(s)` to create a View from a rendered string. Tests access `.Content` field for assertions.
+
+4. **tea.KeyMsg is interface**: `tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter})` for simulating key events in tests. `msg.String()` returns "enter", "left", "right", "esc", etc. — matched with string switch.
+
+5. **textarea.Focus() returns tea.Cmd**: Unlike v1, `Focus()` returns a `tea.Cmd` (not the model). `ChatModel.Focus()` also returns `tea.Cmd` for the parent to batch. `Blur()` returns nothing.
+
+6. **Async decryption via tea.Cmd**: `loadMessagesCmd()` calls `messages.Service.FetchMessages()` in a background goroutine, returning `msgsLoadedMsg`. `sendMessageCmd()` calls `SendMessage()` similarly, returning `msgSentMsg`. Decryption and encryption never block Update.
+
+7. **Enter handling**: Send on Enter with content + contact. Ignore Enter when no content or no contact (do NOT forward to textarea — that causes spurious blink commands). Shift+Enter for newlines is handled by textarea natively.
+
+8. **Message format**: Own messages (sender == username) shown right-aligned with primary color, no sender prefix. Received messages shown left-aligned with secondary color, includes sender prefix `username:`. Timestamps formatted as `[HH:MM]`.
+
+9. **Contact switching via ←→**: Left/right arrows cycle through contacts with wrap-around. Switching clears displayed messages, sets loading flag, and fires async fetch command.
+
+10. **Auto-scroll on load**: `viewport.GotoBottom()` called after `renderMessages()`. Viewport naturally stays at bottom until user scrolls up manually.
+
+### Successful Patterns
+- TDD: Wrote test file first, then implementation. 25 tests covering send, receive, decrypt, contact switch, auto-scroll, blur/focus, empty states, error states, resize.
+- `mockCrypto` (reused from messages_test.go) — real GPG/AES crypto for true roundtrip verification.
+- In-memory SQLite (`storage.Initialize(":memory:")`) for all DB tests.
+- Direct model testing: `m.Update(msg)` and check state, no `tea.NewProgram()` needed for most tests.
+- `RenderEmptyState()` from styles.go for empty message state.
+
+### Issues Encountered
+- **Bubble Tea v1 vs v2 API confusion**: Initial code used v1 patterns (`View() string`, `viewport.New(80, 20)`, `textarea.Focus()` return model). Fixed by checking `go doc` for each symbol.
+- **Enter key forwarding bug**: Initially forwarded Enter to textarea when send conditions weren't met, causing textarea to return blink commands. Fixed by removing the fallthrough — Enter is consumed entirely by the chat view.
+- **Parallel agent files**: Other TUI task agents wrote files with compilation errors that affected the package build. Login.go was renamed to .bak4. Contacts.go has a textinput Width issue causing panics in contacts tests (separate from chat).
+- **gopls not installed** — verification via `go test -race` + `go vet` instead.
+
+### Test Results
+- **25 tests, all PASS** with `-race`
+  - TestNewChatModel: model initialization with contacts
+  - TestSendMessage: type + Enter sends, textarea clears, message in DB
+  - TestReceiveMessage: messages loaded into display
+  - TestSwitchContact: left/right wraps through contacts
+  - TestSwitchContactClearsMessages: switching clears and sets loading
+  - TestAutoScroll: viewport at bottom after loading
+  - TestOwnMessageDecryption: AES-encrypted own messages displayed
+  - TestReceivedMessageDecryption: GPG-encrypted received messages displayed
+  - TestQuitOnEscape: Escape sets quitting flag
+  - TestNoSendWhenNoContact/TestNoSendEmptyMessage: no-op on invalid send
+  - TestFormatMessageOwnVsReceived: right/left alignment and sender prefix
+  - TestFormatTimestamp: HH:MM extraction from various formats
+  - TestEmptyContactState: "No contacts" header rendered
+  - TestViewRenders: full view contains expected elements
+  - TestBlurAndFocus: key events ignored when blurred
+  - TestRenderMessagesEmpty/WithContent: viewport content state
+  - TestErrorOnMessageLoad/Send: error messages displayed
+  - TestSetContactsSelectsFirst: auto-select on contact update
+  - TestLoadMessagesCmdWithNoContact: nil cmd when no contact
+  - TestWindowResize: component sizes updated on WindowSizeMsg
+  - TestSendOnEnterWithContent: multiline content sent on Enter
+  - TestLoadingFlagAfterMessageSent: loading flag set after send
+
+### Guardrail Verification
+- ✅ No blocking decryption in Update() — all crypto via tea.Cmd
+- ✅ No message body logging
+- ✅ Enter sends, Shift+Enter handled by textarea
+- ✅ ←→ switches contacts
+- ✅ Auto-scroll on new messages (GotoBottom)
+- ✅ Events forwarded to child models (viewport, textarea)
+- ✅ Race detector clean on all tests
+
+## Task 17: Contacts View (2026-06-05)
+
+### Key Decisions
+1. **Bubble Tea v2 API differences**: `View() tea.View` not `View() string`, `KeyMsg` is now an interface (use `KeyPressMsg`), `WithInput(nil)` needed to disable TTY in tests.
+2. **Custom ItemDelegate**: Created `contactDelegate` embedding `list.DefaultDelegate` with custom `Render()` showing status dots (green for saved, amber for pending).
+3. **Pointer for textinput**: `textinput.Model` stored as `*textinput.Model` in `ContactsModel` — value copy caused width-reset issues in Bubble Tea programs.
+4. **State-based view switching**: Three states — `contactStateViewing` (list), `contactStateAdding` (form), `contactStatePending` (requests). Same `list.Model` reused with different item sets.
+5. **No blocking in Update()**: All async operations (add contact, accept/decline) return `tea.Cmd` closures. Results come back via custom message types (`ContactAddedMsg`, `ContactRequestHandledMsg`).
+6. **Empty state pattern**: `RenderEmptyState(width, message)` uses `lipgloss.Place` for centered, muted, italic rendering.
+
+### Successful Patterns
+- `tea.KeyPressMsg{Code: tea.KeyEnter}` for special keys, `tea.KeyPressMsg{Text: "a", Code: 'a'}` for character keys
+- `tea.NewView(str)` to wrap string views in Bubble Tea v2
+- `list.NewDefaultDelegate()` as base for custom delegates
+- Direct `model.Update(msg)` in tests instead of program-based tests for forms (avoids textinput rendering panics)
+- `m.View().Content` to access rendered string from `tea.View`
+
+### Issues Encountered
+- **Parallel agent file conflicts**: Other Wave 4 agents repeatedly created/overwrote files. Mitigated with quick bash writes and immediate testing.
+- **textinput panic in tests**: `placeholderView` panics with `makeslice: len out of range` when width is negative. Fixed by clamping `SetWidth` to positive values and using direct Update tests for add-form views.
+- **Bubble Tea v2 KeyMsg changes**: `KeyMsg` is now an interface (`KeyPressMsg`, `KeyReleaseMsg` implement it). Old `KeyMsg{Type, Runes}` pattern doesn't work.
+
+### Tests (15/15 PASS, race detector clean)
+| Test | What it verifies |
+|------|-----------------|
+| TestContactsViewRenders | Empty state + contact list with usernames and .onion addresses |
+| TestAddContactForm | 'a' key transitions to add form with .onion prompt |
+| TestAddContactSubmitEmpty | Empty submission shows error |
+| TestAddContactSubmitInvalid | Non-.onion address rejected |
+| TestAddContactSubmitValid | Valid .onion → ContactAddedMsg → added to list |
+| TestEmptyState | "No contacts yet. Press 'a'" message shown |
+| TestAcceptContactRequest | 'a' on pending → ContactRequestHandledMsg{Accepted: true} |
+| TestDeclineContactRequest | 'd' on pending → removes request, shows "Declined" |
+| TestContactsEscGoesBack | Esc returns BackMsg for navigation |
+| TestContactsNavigation | Enter shows contact detail with truncated onion |
+| TestSelfAddPrevention | Error in ContactAddedMsg.Err → preserves state |
+| TestPendingViewEmpty | Pending view with no requests shows empty message |
+| TestPendingViewEscBackToContacts | Esc from pending → back to viewing, contacts visible |
+| TestContactsLoadedMsg | ContactsLoadedMsg populates list correctly |
+| TestTruncateOnion | Long .onion addresses truncated to 20 chars + "..." |
+

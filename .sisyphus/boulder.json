@@ -45,6 +45,15 @@
       "agent": "Sisyphus-Junior",
       "category": "quick",
       "updated_at": "2026-06-05T10:03:15.155Z"
+    },
+    "todo:14": {
+      "task_key": "todo:14",
+      "task_label": "14",
+      "task_title": "**TUI Theme + Styles**",
+      "session_id": "ses_168bd3f87ffeh7Qfrg8hNEX1wr",
+      "agent": "Sisyphus-Junior",
+      "category": "visual-engineering",
+      "updated_at": "2026-06-05T10:20:35.155Z"
     }
   }
 }

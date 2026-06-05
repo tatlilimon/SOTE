@@ -1069,7 +1069,7 @@ Wave FINAL (After ALL tasks — parallel review agents):
   - Message: `feat(transport): Tor SOCKS HTTP client with retry and fingerprint verification`
   - Files: `internal/transport/client.go`, `internal/transport/client_test.go`
 
-- [ ] 14. **TUI Theme + Styles**
+- [x] 14. **TUI Theme + Styles**
 
   **What to do**:
   - Create `internal/tui/styles.go` — centralized Lipgloss style definitions
@@ -1142,7 +1142,7 @@ Wave FINAL (After ALL tasks — parallel review agents):
   - Message: `feat(tui): centralized theme with Lipgloss styles and color scheme`
   - Files: `internal/tui/styles.go`, `internal/tui/styles_test.go`
 
-- [ ] 15. **Login + Register Views**
+- [x] 15. **Login + Register Views**
 
   **What to do**:
   - Create `internal/tui/login.go` — login view using Bubble Tea + Bubbles `textinput`
@@ -1213,7 +1213,7 @@ Wave FINAL (After ALL tasks — parallel review agents):
   - Message: `feat(tui): login and register views with validation and keyboard nav`
   - Files: `internal/tui/login.go`, `internal/tui/register.go`, `internal/tui/login_test.go`
 
-- [ ] 16. **Main Menu + Navigation**
+- [x] 16. **Main Menu + Navigation**
 
   **What to do**:
   - Create `internal/tui/nav.go` — navigation system and main menu view
@@ -1276,7 +1276,7 @@ Wave FINAL (After ALL tasks — parallel review agents):
   - Message: `feat(tui): main menu with view switching and responsive layout`
   - Files: `internal/tui/nav.go`, `internal/tui/nav_test.go`
 
-- [ ] 17. **Contacts View**
+- [x] 17. **Contacts View**
 
   **What to do**:
   - Create `internal/tui/contacts.go` — contacts management view
@@ -1345,7 +1345,7 @@ Wave FINAL (After ALL tasks — parallel review agents):
   - Message: `feat(tui): contacts view with list, add form, and request management`
   - Files: `internal/tui/contacts.go`, `internal/tui/contacts_test.go`
 
-- [ ] 18. **Chat View**
+- [x] 18. **Chat View**
 
   **What to do**:
   - Create `internal/tui/chat.go` — the main chat view
@@ -1426,7 +1426,7 @@ Wave FINAL (After ALL tasks — parallel review agents):
   - Message: `feat(tui): chat view with viewport, textarea, and message decryption`
   - Files: `internal/tui/chat.go`, `internal/tui/chat_test.go`
 
-- [ ] 19. **Settings View**
+- [x] 19. **Settings View**
 
   **What to do**:
   - Create `internal/tui/settings.go` — settings and account view
