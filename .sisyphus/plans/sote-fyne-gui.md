@@ -372,7 +372,7 @@ Wave FINAL (After ALL tasks — parallel review agents):
 
   **Commit**: YES — `feat(gui): settings view with password change` — internal/gui/settings.go, settings_test.go
 
-- [ ] 7. **System Tray + Desktop Notifications**
+- [x] 7. **System Tray + Desktop Notifications**
 
   **What to do**:
   - Create `internal/gui/tray.go` — system tray integration

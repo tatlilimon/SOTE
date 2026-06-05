@@ -187,3 +187,29 @@
 
 - `internal/gui/chat.go` — 247 lines: ChatView struct, bubble rendering, async send/fetch
 - `internal/gui/chat_test.go` — 243 lines: 11 tests with real DB + crypto setup
+
+## Task 7: System Tray + Desktop Notifications
+
+### Files Modified
+- `internal/gui/tray.go` — NEW: TrayManager with system tray menu, colored circle icon, desktop notifications
+- `internal/gui/tray_test.go` — NEW: 11 TDD tests covering menu items, restore window, notifications, fallback, icons, connection status
+- `internal/gui/app.go` — MODIFIED: Added `NewTrayManager(a, w)` call in `Run()` before `ShowAndRun()`
+- `internal/gui/chat.go` — MODIFIED: Added `OnIncomingMessage func(sender string)` callback field; added `notifyIncoming()` method triggered from `loadMessages()`
+
+### Key Decisions
+- Used `fyne.io/fyne/v2/driver/desktop.App` interface (built into Fyne v2) — no separate `github.com/fyne-io/desktop` dependency needed
+- Type assertion guard: `if desk, ok := app.(desktop.App); ok` ensures graceful fallback in headless/test environments
+- Tray icon: programmatically generated 16×16 PNG circle using `image/png` — green (#10B981) when connected, red (#EF4444) when disconnected
+- All tray methods (`SetConnected`, `NotifyIncoming`, `refresh`) are safe to call without desktop — they no-op gracefully
+- `OnIncomingMessage` callback fires per unique sender (dedup via map) after each `loadMessages()` call
+
+### Patterns Used
+- Double-check `desktop.App` cast before every desktop operation (in `setup()` and `refresh()`)
+- `slog.Warn()` on missing desktop features rather than crashing
+- `fyne.NewMenuItem(label, nil)` + `Disabled = true` for non-interactive status indicator
+- `image.NewRGBA` + circle math for pixel-perfect icon generation
+
+### Build Status
+- `go build ./internal/gui/` — PASS (compilation succeeds)
+- `go vet ./internal/gui/` — PASS (no warnings)
+- `go test` — BLOCKED by missing system library `libXxf86vm-devel` (Fyne GLFW dependency). Code-level validation clean.

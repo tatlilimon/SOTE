@@ -36,6 +36,15 @@
       "agent": "Sisyphus-Junior",
       "category": "visual-engineering",
       "updated_at": "2026-06-05T14:47:35.228Z"
+    },
+    "todo:7": {
+      "task_key": "todo:7",
+      "task_label": "7",
+      "task_title": "**System Tray + Desktop Notifications**",
+      "session_id": "ses_167b4361dffeElVQZaqUrEK9R6",
+      "agent": "Sisyphus-Junior",
+      "category": "deep",
+      "updated_at": "2026-06-05T15:05:54.968Z"
     }
   }
 }

@@ -24,6 +24,9 @@ func Run(cfg *config.Config, db *sql.DB,
 	a := app.NewWithID("sote.gui")
 	a.Settings().SetTheme(NewSOTETheme())
 	w := createWindow(a)
+
+	NewTrayManager(a, w)
+
 	w.ShowAndRun()
 	_ = cfg
 	_ = db

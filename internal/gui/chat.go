@@ -41,6 +41,11 @@ type ChatView struct {
 	msgSvc *messages.Service
 
 	mu sync.Mutex
+
+	// OnIncomingMessage is called when messages from a different user arrive.
+	// The sender parameter is the username of the person who sent the message.
+	// Set this callback to trigger desktop notifications or UI updates.
+	OnIncomingMessage func(sender string)
 }
 
 func NewChatView(msgSvc *messages.Service, username, password string, contacts []storage.Contact) *ChatView {
@@ -164,6 +169,7 @@ func (cv *ChatView) loadMessages() {
 				cv.mu.Unlock()
 				cv.refreshMessageList()
 				cv.scroll.ScrollToBottom()
+				cv.notifyIncoming(msgs)
 			}
 		})
 	}()
@@ -175,6 +181,19 @@ func (cv *ChatView) updateSendState() {
 		cv.sendBtn.Disable()
 	} else {
 		cv.sendBtn.Enable()
+	}
+}
+
+func (cv *ChatView) notifyIncoming(msgs []messages.DecryptedMessage) {
+	if cv.OnIncomingMessage == nil {
+		return
+	}
+	seen := make(map[string]bool)
+	for _, m := range msgs {
+		if m.Sender != cv.username && !seen[m.Sender] {
+			seen[m.Sender] = true
+			cv.OnIncomingMessage(m.Sender)
+		}
 	}
 }
 
