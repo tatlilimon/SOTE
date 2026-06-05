@@ -274,7 +274,7 @@ Wave FINAL (After ALL tasks — parallel review agents):
   - Message: `scaffold: project structure with cmd/internal layout and test infra`
   - Files: `cmd/sote/main.go`, `internal/*/`, `go.mod`, `go.sum`
 
-- [ ] 2. **Configuration System**
+- [x] 2. **Configuration System**
 
   **What to do**:
   - Create `internal/config/config.go` with `Config` struct containing all settings
@@ -343,7 +343,7 @@ Wave FINAL (After ALL tasks — parallel review agents):
   - Message: `feat(config): YAML config system with env var overrides`
   - Files: `internal/config/config.go`, `internal/config/config_test.go`
 
-- [ ] 3. **Structured Logging Setup**
+- [x] 3. **Structured Logging Setup**
 
   **What to do**:
   - Create `internal/logging/logging.go` with `log/slog` initialization
@@ -410,7 +410,7 @@ Wave FINAL (After ALL tasks — parallel review agents):
   - Message: `feat(logging): structured slog logger with file output and levels`
   - Files: `internal/logging/logging.go`, `internal/logging/logging_test.go`
 
-- [ ] 4. **Database Layer**
+- [x] 4. **Database Layer**
 
   **What to do**:
   - Create `internal/storage/db.go` — SQLite initialization with `modernc.org/sqlite` (pure Go, no CGo)
@@ -487,7 +487,7 @@ Wave FINAL (After ALL tasks — parallel review agents):
   - Message: `feat(storage): SQLite with WAL mode, migrations, fix SaveContact bug`
   - Files: `internal/storage/db.go`, `internal/storage/db_test.go`, `internal/storage/migrations.go`
 
-- [ ] 5. **Domain Types + Interfaces**
+- [x] 5. **Domain Types + Interfaces**
 
   **What to do**:
   - Create `internal/domain/types.go` — core domain types:
