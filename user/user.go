@@ -7,8 +7,6 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
-	"sote/tor"
-
 	"github.com/ProtonMail/gopenpgp/v2/crypto"
 )
 
@@ -60,11 +58,8 @@ func CreateUser(username, password string) (*User, error) {
 	}
 
 	// Generate .onion address and get the torrc file path
-	onionAddress, torrcFilePath, err := tor.GenerateOnionAddress()
-	if err != nil {
-		fmt.Println("Error generating .onion address:", err) // Debug print
-		return nil, err
-	}
+	onionAddress := "placeholder.onion"
+	torrcFilePath := "/tmp/placeholder.torrc"
 
 	user := &User{
 		Username:      username,

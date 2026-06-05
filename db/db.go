@@ -6,7 +6,7 @@ import (
 	"log"
 	"sote/user"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 var db *sql.DB

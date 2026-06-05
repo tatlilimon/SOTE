@@ -1,0 +1,23 @@
+{
+  "active_plan": "/home/rootatar/Documents/my-projects/SOTE/.sisyphus/plans/sote-rewrite.md",
+  "started_at": "2026-06-05T09:16:07.939Z",
+  "session_ids": [
+    "ses_16aedc538ffe3OeINurnzSzJ22"
+  ],
+  "session_origins": {
+    "ses_16aedc538ffe3OeINurnzSzJ22": "direct"
+  },
+  "plan_name": "sote-rewrite",
+  "agent": "atlas",
+  "task_sessions": {
+    "todo:1": {
+      "task_key": "todo:1",
+      "task_label": "1",
+      "task_title": "**Project Scaffolding + Test Infrastructure**",
+      "session_id": "ses_168ed48e0ffeQGft7uVogRpbAN",
+      "agent": "Sisyphus-Junior",
+      "category": "quick",
+      "updated_at": "2026-06-05T09:24:54.545Z"
+    }
+  }
+}
