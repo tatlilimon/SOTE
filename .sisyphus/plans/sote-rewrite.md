@@ -1494,7 +1494,7 @@ Wave FINAL (After ALL tasks — parallel review agents):
   - Message: `feat(tui): settings view with password change and connection info`
   - Files: `internal/tui/settings.go`, `internal/tui/settings_test.go`
 
-- [ ] 20. **TUI + Services Wire-Up**
+- [x] 20. **TUI + Services Wire-Up**
 
   **What to do**:
   - Create `internal/tui/model.go` — the root Bubble Tea model that composes all views and services

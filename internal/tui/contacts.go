@@ -130,6 +130,17 @@ func NewContactsModel(currentUser string) ContactsModel {
 	}
 }
 
+func (m *ContactsModel) SetCurrentUser(username string) {
+	m.currentUser = username
+}
+
+func (m *ContactsModel) AppendPending(item contactItem) {
+	m.pendingReqs = append(m.pendingReqs, item)
+	if m.state == contactStatePending {
+		m.rebuildList()
+	}
+}
+
 func (m *ContactsModel) SetSize(width, height int) {
 	m.width = width
 	m.height = height

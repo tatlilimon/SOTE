@@ -478,6 +478,58 @@
 - ✅ Events forwarded to child models (viewport, textarea)
 - ✅ Race detector clean on all tests
 
+## Task 20: TUI + Services Wire-Up (2026-06-05)
+
+### Key Decisions
+1. **Root Model composition**: `Model` struct in `model.go` holds ALL services (config, auth, crypto, contacts, messages, tor, transport) plus ALL 6 child view models (login, register, nav state, chat, contacts, settings). View dispatch is handled directly by `dispatchToActiveView()` switching on `activeView viewState` enum.
+
+2. **Service injection via closures**: LoginModel and RegisterModel use `onSubmit` callback closures that call the real `authSvc.Login()` / `authSvc.Register()`. This keeps the login/register views decoupled from concrete auth implementation.
+
+3. **ChatModel constructed on login**: `activateMainMenu()` creates ChatModel with real db + crypto services and current user credentials. Before login, `m.chat` is nil.
+
+4. **SettingsModel wrapper issues**: SettingsModel returns `(SettingsModel, tea.Cmd)` from Update instead of `(tea.Model, tea.Cmd)`, and `View() string` instead of `View() tea.View`. Handled by calling concrete type methods directly (not via tea.Model interface). Added `SetSize()` and `SetUser()` methods to settings.go.
+
+5. **ContactsModel additions**: Added `SetCurrentUser()` and `AppendPending()` methods to contacts.go to support root model operations.
+
+6. **ChatModel LoadMessagesCmd export**: `loadMessagesCmd()` was unexported. Added `LoadMessagesCmd()` wrapper for incoming message handler to trigger message refresh.
+
+7. **PasswordChanger adapter**: `passwordChanger` struct in model.go implements `tui.PasswordChanger` interface by calling storage.GetUser, crypto.VerifyPassword, crypto.HashPassword, crypto.DecryptAES, crypto.EncryptAES, and storage.SaveUser — full re-encryption workflow.
+
+8. **Bubble Tea v2 ProgramOption**: v2 does NOT have `tea.WithAltScreen()`. Alt screen is the default behavior when output is a TTY. Available options: `WithContext`, `WithInput`, `WithOutput`, `WithWindowSize`, `WithoutRenderer`, `WithoutSignals`.
+
+9. **View switching**: Keyboard shortcuts (1-5, q, esc) handled in `handleKeyPress()`. View transitions detected in `checkTransitions()` (login done → main menu, chat quit → main menu). NavModel not used for routing — root model handles it directly.
+
+10. **Shutdown sequence**: `shutdownCmd()` returns a `tea.Cmd` that stops Tor, stops HTTP server, checkpoints WAL, closes DB, logs "SOTE stopped gracefully", and returns `tea.Quit`. `shuttingDown` flag set before returning quit commands to prevent re-entry.
+
+### Successful Patterns
+- Direct model testing: `m.Update(msg)` + `md.(Model)` type assertion pattern works for all model tests without `tea.NewProgram()`.
+- Service registration before login works: `m.authSvc.Register(ctx, ...)` + `m.authSvc.Login(ctx, ...)` then set `m.login.done = true` and `m.login.result = user` — skips the full program loop for testing.
+- `setupTestModel` and `setupLoggedInModel` helpers reduce boilerplate across 9 test functions.
+- All 110 TUI tests pass with `-race` (including 9 new model tests + 101 existing tests).
+- 22MB binary produced by `go build -o sote ./cmd/sote`.
+
+### Files Modified (outside task scope)
+- `internal/tui/settings.go`: Added `SetSize(w,h)`, `SetUser(user)` methods.
+- `internal/tui/contacts.go`: Added `SetCurrentUser(username)`, `AppendPending(item)` methods.
+- `internal/tui/chat.go`: Added `LoadMessagesCmd()` exported wrapper.
+
+### Issues Encountered
+- **write tool can't overwrite existing files**: Had to use `bash cat >` heredoc to write model.go and main.go after initial write failed.
+- **`seedUser` name conflict**: chat_test.go already had a `seedUser` function with different signature. Renamed to `registerTestUser` in model_test.go.
+- **`TestWindowResize` name conflict**: chat_test.go already declared it. Renamed to `TestModelWindowResize`.
+- **Login flow in tests**: `tea.NewProgram` calls Init() which starts Tor — can't use for root model tests. Workaround: use direct model state manipulation.
+- **Ctrl+C shutdown flag**: `shuttingDown` wasn't set in key press handlers (only in `shutdownMsg` handler). Fixed by setting `m.shuttingDown = true` in ctrl+c, q, and 5 handlers before returning quit commands.
+- **gopls not installed** — verification via `go build` + `go test -race` instead.
+
+### Guardrail Verification
+- ✅ No `InsecureSkipVerify` in model.go or main.go
+- ✅ No `log.Fatal` in internal/ (uses slog.Error + os.Exit in cmd/ only)
+- ✅ No `fmt.Println` in production code (model.go, main.go)
+- ✅ No global variables — all state in Model struct
+- ✅ No import from `cmd/` into `internal/` (cmd/ imports internal/, not vice versa)
+- ✅ Race detector clean on all 110 TUI tests
+- ✅ 22MB binary builds cleanly
+
 ## Task 17: Contacts View (2026-06-05)
 
 ### Key Decisions

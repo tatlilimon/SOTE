@@ -54,6 +54,15 @@
       "agent": "Sisyphus-Junior",
       "category": "visual-engineering",
       "updated_at": "2026-06-05T10:20:35.155Z"
+    },
+    "todo:20": {
+      "task_key": "todo:20",
+      "task_label": "20",
+      "task_title": "**TUI + Services Wire-Up**",
+      "session_id": "ses_168a04765ffeSKaUdcmciLi8ch",
+      "agent": "Sisyphus-Junior",
+      "category": "deep",
+      "updated_at": "2026-06-05T10:57:49.420Z"
     }
   }
 }

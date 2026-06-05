@@ -289,6 +289,10 @@ func formatTimestamp(ts string) string {
 	return TimestampStyle.Render("[" + t.Format("15:04") + "]")
 }
 
+func (m *ChatModel) LoadMessagesCmd() tea.Cmd {
+	return m.loadMessagesCmd()
+}
+
 func (m *ChatModel) loadMessagesCmd() tea.Cmd {
 	if m.contactName == "" {
 		return nil

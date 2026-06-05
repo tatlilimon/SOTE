@@ -83,6 +83,15 @@ func NewSettingsModel(user *domain.User, changer PasswordChanger) SettingsModel 
 	}
 }
 
+func (m *SettingsModel) SetSize(w, h int) {
+	m.width = w
+	m.height = h
+}
+
+func (m *SettingsModel) SetUser(user *domain.User) {
+	m.user = user
+}
+
 func (m *SettingsModel) SetTorStatus(online bool, socksPort int, uptime string) {
 	m.torOnline = online
 	m.socksPort = socksPort
