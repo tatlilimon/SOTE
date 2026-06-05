@@ -214,7 +214,7 @@ Wave FINAL (After ALL tasks — parallel review agents):
   - Message: `scaffold(gui): Fyne app window, --gui flag, tab container`
   - Files: `internal/gui/app.go`, `cmd/sote/main.go`, `go.mod`, `go.sum`
 
-- [ ] 2. **Custom SOTE Theme**
+- [x] 2. **Custom SOTE Theme**
 
   **What to do**:
   - Create `internal/gui/theme.go` — implement `fyne.Theme` interface

@@ -22,6 +22,7 @@ func Run(cfg *config.Config, db *sql.DB,
 	torSvc *tor.TorService, srv *transport.Server, client *transport.Client,
 ) {
 	a := app.NewWithID("sote.gui")
+	a.Settings().SetTheme(NewSOTETheme())
 	w := createWindow(a)
 	w.ShowAndRun()
 	_ = cfg
