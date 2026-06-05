@@ -1562,7 +1562,7 @@ Wave FINAL (After ALL tasks — parallel review agents):
   - Message: `feat(tui): wire all services into Bubble Tea model with full event loop`
   - Files: `internal/tui/model.go`, `cmd/sote/main.go`, `internal/tui/model_test.go`
 
-- [ ] 21. **Daemon Mode**
+- [x] 21. **Daemon Mode**
 
   **What to do**:
   - Implement `--daemon` flag in `cmd/sote/main.go`
@@ -1616,7 +1616,7 @@ Wave FINAL (After ALL tasks — parallel review agents):
   - Message: `feat(daemon): --daemon flag with headless mode and HTTP API`
   - Files: `cmd/sote/main.go`, `cmd/sote/main_test.go`
 
-- [ ] 22. **Graceful Shutdown**
+- [x] 22. **Graceful Shutdown**
 
   **What to do**:
   - Implement `signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)` in `cmd/sote/main.go`

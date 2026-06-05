@@ -98,7 +98,7 @@ func main() {
 func runDaemon(cfg *config.Config, db *sql.DB, torSvc *tor.TorService, srv *transport.Server) {
 	slog.Info("daemon mode", "port", cfg.ListenPort)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
 	if err := torSvc.Start(ctx); err != nil {
@@ -111,13 +111,19 @@ func runDaemon(cfg *config.Config, db *sql.DB, torSvc *tor.TorService, srv *tran
 		os.Exit(1)
 	}
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
+	srv.SetAutoAccept(true)
+
+	fmt.Printf("SOTE daemon running on port %d. Onion address: %s. PID: %d\n",
+		cfg.ListenPort, torSvc.GetOnionAddress(), os.Getpid())
+
+	<-ctx.Done()
 
 	slog.Info("shutting down daemon...")
 	srv.Stop()
 	torSvc.Stop()
+	if _, err := db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+		slog.Error("wal checkpoint", "error", err)
+	}
 	db.Close()
 	slog.Info("SOTE daemon stopped")
 }

@@ -571,3 +571,68 @@
 | TestContactsLoadedMsg | ContactsLoadedMsg populates list correctly |
 | TestTruncateOnion | Long .onion addresses truncated to 20 chars + "..." |
 
+
+## Task 22: Graceful Shutdown (2026-06-05)
+
+### Key Decisions
+1. **Dual shutdown paths**: Daemon mode uses explicit sequential shutdown in `runDaemon()`. TUI mode uses `model.shutdownCmd()` triggered by ctrl+c/q/5 keys. Both follow the same order: HTTP drain → Tor close → WAL checkpoint → DB close.
+2. **Signal handling unified**: Both paths use `signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)` instead of manual `signal.Notify` channels. Daemon blocks on `<-ctx.Done()`. TUI passes ctx via `tea.WithContext(ctx)` — Bubble Tea quits when context is cancelled.
+3. **HTTP shutdown timeout: 30s**: Changed from 5s to 30s per spec. `transport.Server.Stop()` now uses 30s timeout. Added `Shutdown(ctx)` method for external timeout control.
+4. **WAL checkpoint in daemon**: Added `PRAGMA wal_checkpoint(TRUNCATE)` before `db.Close()` in daemon path — was missing entirely.
+5. **Shutdown order fixed**: Previously model.go did Tor first, HTTP second (wrong). Now: HTTP(30s) → Tor → WAL checkpoint → DB close → terminal restore. Terminal restoration is automatic via Bubble Tea's `tea.Quit()`.
+6. **Test strategy**: TestSIGTERMShutdown verifies signal.NotifyContext responds to SIGTERM. TestDBClosedOnShutdown verifies WAL checkpoint + DB close works. TestTorClosedOnShutdown verifies idempotent Stop() on unstarted Tor service.
+
+### Successful Patterns
+- `signal.NotifyContext` simplifies both daemon and TUI signal handling — no manual channel management
+- 30s HTTP shutdown timeout gives in-flight requests time to complete
+- `PRAGMA wal_checkpoint(TRUNCATE)` flushes WAL to main DB file before close, preventing data loss
+- All 8 tests pass with `-race` (0 race conditions)
+
+### Issues Encountered
+- **Parallel agent interference**: Task 21 (Daemon Mode) agent was simultaneously modifying `cmd/sote/main.go` and `cmd/sote/main_test.go`, changing the `runDaemon` signature (added `contactSvc` param) and test imports. Required 3 rounds of conflict resolution.
+- **Orphaned code**: Initial edit left orphaned code lines (130-151) outside function body — caught by build error and fixed with full function replacement.
+- **gopls not installed** — verification via `go build` + `go test -race` instead.
+
+### Test Results
+- **8 tests, all PASS** with `-race` (cmd/sote package)
+- TestMainParsesFlags, TestMainHelpFlag, TestMainDefaultDaemonFalse (pre-existing)
+- TestDaemonModeHTTPEndpoints, TestDaemonModeNoTUI (Task 21)
+- TestSIGTERMShutdown, TestDBClosedOnShutdown, TestTorClosedOnShutdown (Task 22)
+- Full project: TUI (110 tests PASS), Transport (35 tests PASS), build clean
+
+## Task 21: Daemon Mode (2026-06-05)
+
+### Key Decisions
+1. **Auto-accept in handler, not goroutine**: Contact requests are auto-accepted synchronously in `handleReceiveContactRequest` when `autoAccept` is true and `currentUsername` is set. No polling goroutine needed — daemon mode auto-accepts immediately on receipt.
+
+2. **SetAutoAccept on Server**: Added `autoAccept bool` field + `SetAutoAccept(enabled bool)` exported method to `transport.Server`. The daemon calls `srv.SetAutoAccept(true)` after server starts. The handler checks this flag under RLock.
+
+3. **Startup message uses fmt.Printf, not slog**: The daemon startup message goes to stdout via `fmt.Printf` for user visibility. The message format: `"SOTE daemon running on port %d. Onion address: %s. PID: %d"`. slogs go to the log file.
+
+4. **Bubble Tea is NOT used in daemon mode**: Unlike the plan's suggestion to use `tea.WithoutRenderer()`, daemon mode skips Bubble Tea entirely — calls `runDaemon()` directly without creating a `tea.Program`. This is simpler and cleaner.
+
+5. **signal.NotifyContext for graceful shutdown**: Used `signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)` instead of manual signal channel. Context cancellation drives shutdown: stop server, stop Tor, checkpoint WAL, close DB.
+
+### Successful Patterns
+- TDD: Wrote test infrastructure first (mockTorService, setupDaemonTestServer), then test functions, then implementation.
+- `transport.Server.SetAutoAccept()` pattern: exported setter with mutex protection, configured from main.go after server construction.
+- `TestDaemonModeHTTPEndpoints`: full integration test — register user → receive contact request → verify auto-accept via `storage.GetAllContacts()`.
+- `TestDaemonModeNoTUI`: captures stdout, verifies startup message format, asserts no ANSI escape sequences or Bubble Tea references.
+
+### Issues Encountered
+- **Parallel agent file modification**: `main_test.go` had additional test functions (TestSIGTERMShutdown, TestDBClosedOnShutdown, TestTorClosedOnShutdown) injected by a parallel agent. Required adding missing imports (`os/signal`, `syscall`, `time`, `tor`).
+- **unused parameter cleanup**: Initially passed `contactSvc` to `runDaemon` for polling-based auto-accept. Switched to handler-level auto-accept → removed unused parameter.
+
+### Test Results
+- **8 tests, all PASS** with `-race`
+  - TestMainParsesFlags, TestMainHelpFlag, TestMainDefaultDaemonFalse (existing)
+  - TestDaemonModeHTTPEndpoints: register + auto-accept verified via DB
+  - TestDaemonModeNoTUI: startup message format, no ANSI, no TUI refs
+  - TestSIGTERMShutdown, TestDBClosedOnShutdown, TestTorClosedOnShutdown (parallel agent)
+
+### Guardrail Verification
+- ✅ No TUI rendering in daemon mode (no tea.NewProgram called)
+- ✅ SIGTERM graceful shutdown (signal.NotifyContext → srv.Stop → tor.Stop → WAL checkpoint → db.Close)
+- ✅ Startup message: "SOTE daemon running on port {port}. Onion address: {addr}. PID: {pid}"
+- ✅ Contact requests auto-accepted in daemon mode (verified by TestDaemonModeHTTPEndpoints)
+- ✅ Race detector clean on all tests

@@ -63,6 +63,15 @@
       "agent": "Sisyphus-Junior",
       "category": "deep",
       "updated_at": "2026-06-05T10:57:49.420Z"
+    },
+    "todo:21": {
+      "task_key": "todo:21",
+      "task_label": "21",
+      "task_title": "**Daemon Mode**",
+      "session_id": "ses_1688ff3f7ffeaV7p2CvP1cTKgG",
+      "agent": "Sisyphus-Junior",
+      "category": "quick",
+      "updated_at": "2026-06-05T11:10:00.137Z"
     }
   }
 }

@@ -482,22 +482,27 @@ func (m Model) renderMainMenu(width, height int) string {
 func (m *Model) shutdownCmd() tea.Cmd {
 	return func() tea.Msg {
 		slog.Info("shutting down SOTE...")
-		if m.torSvc != nil {
-			if err := m.torSvc.Stop(); err != nil {
-				slog.Error("tor stop", "error", err)
-			}
-		}
+		// 1. Stop HTTP server, drain connections (30s timeout)
 		if m.server != nil {
 			if err := m.server.Stop(); err != nil {
 				slog.Error("server stop", "error", err)
 			}
 		}
+		// 2. Close Tor hidden service
+		if m.torSvc != nil {
+			if err := m.torSvc.Stop(); err != nil {
+				slog.Error("tor stop", "error", err)
+			}
+		}
+		// 3. Checkpoint SQLite WAL (flush to main DB file)
 		if m.db != nil {
 			if _, err := m.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
 				slog.Error("wal checkpoint", "error", err)
 			}
+			// 4. Close database
 			m.db.Close()
 		}
+		// 5. Terminal is restored automatically by Bubble Tea on Quit
 		slog.Info("SOTE stopped gracefully")
 		return tea.Quit()
 	}
