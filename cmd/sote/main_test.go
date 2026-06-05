@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"os"
 	"os/signal"
 	"syscall"
@@ -78,4 +79,33 @@ func TestTorClosedOnShutdown(t *testing.T) {
 	// Stop should be safe even when Tor was never started
 	err := ts.Stop()
 	assert.NoError(t, err, "stop on unstarted tor should not error")
+}
+
+func TestGUIFlagParsed(t *testing.T) {
+	t.Run("gui flag set", func(t *testing.T) {
+		fs := flag.NewFlagSet("test", flag.ContinueOnError)
+		useGUI := fs.Bool("gui", false, "launch with GUI instead of TUI")
+
+		err := fs.Parse([]string{"--gui"})
+		require.NoError(t, err)
+		assert.True(t, *useGUI)
+	})
+
+	t.Run("gui flag absent", func(t *testing.T) {
+		fs := flag.NewFlagSet("test", flag.ContinueOnError)
+		useGUI := fs.Bool("gui", false, "launch with GUI instead of TUI")
+
+		err := fs.Parse([]string{})
+		require.NoError(t, err)
+		assert.False(t, *useGUI)
+	})
+
+	t.Run("gui flag shorthand", func(t *testing.T) {
+		fs := flag.NewFlagSet("test", flag.ContinueOnError)
+		useGUI := fs.Bool("gui", false, "launch with GUI instead of TUI")
+
+		err := fs.Parse([]string{"--gui=false"})
+		require.NoError(t, err)
+		assert.False(t, *useGUI)
+	})
 }

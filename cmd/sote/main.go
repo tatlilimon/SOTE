@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"flag"
 	"fmt"
 	"log/slog"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"sote/internal/config"
 	"sote/internal/contacts"
 	"sote/internal/crypto"
+	"sote/internal/gui"
 	"sote/internal/logging"
 	"sote/internal/messages"
 	"sote/internal/storage"
@@ -47,6 +49,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
 		os.Exit(1)
 	}
+
+	useGUI := flag.Bool("gui", false, "launch with GUI instead of TUI")
+	flag.Parse()
 
 	logging.InitLogger(cfg.LogLevel, cfg.LogFormat, logPath)
 	slog.Info("SOTE starting", "version", tui.Version)
@@ -83,7 +88,11 @@ func main() {
 
 	client := transport.NewClient()
 
-	runTUI(cfg, db, authSvc, cryptoSvc, contactSvc, msgSvc, torSvc, srv, client)
+	if *useGUI {
+		runGUI(cfg, db, authSvc, cryptoSvc, contactSvc, msgSvc, torSvc, srv, client)
+	} else {
+		runTUI(cfg, db, authSvc, cryptoSvc, contactSvc, msgSvc, torSvc, srv, client)
+	}
 }
 
 func runTUI(cfg *config.Config, db *sql.DB,
@@ -105,4 +114,12 @@ func runTUI(cfg *config.Config, db *sql.DB,
 		slog.Error("tui error", "error", err)
 		os.Exit(1)
 	}
+}
+
+func runGUI(cfg *config.Config, db *sql.DB,
+	authSvc *auth.AuthService, cryptoSvc *crypto.Service,
+	contactSvc *contacts.Service, msgSvc *messages.Service,
+	torSvc *tor.TorService, srv *transport.Server, client *transport.Client,
+) {
+	gui.Run(cfg, db, authSvc, cryptoSvc, contactSvc, msgSvc, torSvc, srv, client)
 }

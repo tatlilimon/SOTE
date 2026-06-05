@@ -1,102 +1,23 @@
 {
-  "active_plan": "/home/rootatar/Documents/my-projects/SOTE/.sisyphus/plans/sote-rewrite.md",
-  "started_at": "2026-06-05T09:16:07.939Z",
+  "active_plan": "/home/rootatar/Documents/my-projects/SOTE/.sisyphus/plans/sote-fyne-gui.md",
+  "started_at": "2026-06-05T14:13:55.228Z",
   "session_ids": [
-    "ses_16aedc538ffe3OeINurnzSzJ22",
-    "ses_168780b5fffeS0SMNaZdEyr2jd",
-    "ses_16877f734ffe0ZCLjNfjpAq5VF",
-    "ses_16877dc9effetEAGqr5vLob17O",
-    "ses_16877a7d8ffejwTFOE16Jrr4QW"
+    "ses_16aedc538ffe3OeINurnzSzJ22"
   ],
   "session_origins": {
-    "ses_16aedc538ffe3OeINurnzSzJ22": "direct",
-    "ses_168780b5fffeS0SMNaZdEyr2jd": "appended",
-    "ses_16877f734ffe0ZCLjNfjpAq5VF": "appended",
-    "ses_16877dc9effetEAGqr5vLob17O": "appended",
-    "ses_16877a7d8ffejwTFOE16Jrr4QW": "appended"
+    "ses_16aedc538ffe3OeINurnzSzJ22": "direct"
   },
-  "plan_name": "sote-rewrite",
+  "plan_name": "sote-fyne-gui",
   "agent": "atlas",
   "task_sessions": {
     "todo:1": {
       "task_key": "todo:1",
       "task_label": "1",
-      "task_title": "**Project Scaffolding + Test Infrastructure**",
-      "session_id": "ses_168ed48e0ffeQGft7uVogRpbAN",
+      "task_title": "**Fyne App Scaffold + --gui Flag**",
+      "session_id": "ses_167dd2bc4fferbAYzh5MoXqENv",
       "agent": "Sisyphus-Junior",
       "category": "quick",
-      "updated_at": "2026-06-05T09:24:54.545Z"
-    },
-    "todo:2": {
-      "task_key": "todo:2",
-      "task_label": "2",
-      "task_title": "**Configuration System**",
-      "session_id": "ses_168e48a46ffeYUZXjUyE6Ip44a",
-      "agent": "Sisyphus-Junior",
-      "category": "quick",
-      "updated_at": "2026-06-05T09:29:29.572Z"
-    },
-    "todo:6": {
-      "task_key": "todo:6",
-      "task_label": "6",
-      "task_title": "**Crypto Service** (SECURITY-CRITICAL)",
-      "session_id": "ses_168df0f0fffeHqp4fZbVkPUl4Z",
-      "agent": "Sisyphus-Junior",
-      "category": "quick",
-      "updated_at": "2026-06-05T09:36:22.937Z"
-    },
-    "todo:11": {
-      "task_key": "todo:11",
-      "task_label": "11",
-      "task_title": "**TLS Certificate Management**",
-      "session_id": "ses_168d399d8ffe3O4RjLjEaFIF8e",
-      "agent": "Sisyphus-Junior",
-      "category": "quick",
-      "updated_at": "2026-06-05T10:03:15.155Z"
-    },
-    "todo:14": {
-      "task_key": "todo:14",
-      "task_label": "14",
-      "task_title": "**TUI Theme + Styles**",
-      "session_id": "ses_168bd3f87ffeh7Qfrg8hNEX1wr",
-      "agent": "Sisyphus-Junior",
-      "category": "visual-engineering",
-      "updated_at": "2026-06-05T10:20:35.155Z"
-    },
-    "todo:20": {
-      "task_key": "todo:20",
-      "task_label": "20",
-      "task_title": "**TUI + Services Wire-Up**",
-      "session_id": "ses_168a04765ffeSKaUdcmciLi8ch",
-      "agent": "Sisyphus-Junior",
-      "category": "deep",
-      "updated_at": "2026-06-05T10:57:49.420Z"
-    },
-    "todo:21": {
-      "task_key": "todo:21",
-      "task_label": "21",
-      "task_title": "**Daemon Mode**",
-      "session_id": "ses_1688ff3f7ffeaV7p2CvP1cTKgG",
-      "agent": "Sisyphus-Junior",
-      "category": "quick",
-      "updated_at": "2026-06-05T11:10:00.137Z"
-    },
-    "todo:23": {
-      "task_key": "todo:23",
-      "task_label": "23",
-      "task_title": "**Integration Tests**",
-      "session_id": "ses_168843c6affeW61VsuzwxAsa00",
-      "agent": "Sisyphus-Junior",
-      "category": "deep",
-      "updated_at": "2026-06-05T11:25:03.275Z"
-    },
-    "final-wave:f1": {
-      "task_key": "final-wave:f1",
-      "task_label": "F1",
-      "task_title": "**Plan Compliance Audit** — `oracle`",
-      "session_id": "ses_16877dc9effetEAGqr5vLob17O",
-      "agent": "oracle",
-      "updated_at": "2026-06-05T11:30:10.618Z"
+      "updated_at": "2026-06-05T14:28:38.428Z"
     }
   }
 }
