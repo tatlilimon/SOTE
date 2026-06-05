@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"flag"
 	"fmt"
 	"log/slog"
 	"os"
@@ -26,9 +25,6 @@ import (
 )
 
 func main() {
-	daemonMode := flag.Bool("daemon", false, "run as daemon only (no TUI)")
-	flag.Parse()
-
 	home, err := os.UserHomeDir()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cannot determine home directory: %v\n", err)
@@ -53,7 +49,7 @@ func main() {
 	}
 
 	logging.InitLogger(cfg.LogLevel, cfg.LogFormat, logPath)
-	slog.Info("SOTE starting", "version", tui.Version, "daemon", *daemonMode)
+	slog.Info("SOTE starting", "version", tui.Version)
 
 	os.MkdirAll(soteDir, 0700)
 
@@ -87,45 +83,7 @@ func main() {
 
 	client := transport.NewClient()
 
-	if *daemonMode {
-		runDaemon(cfg, db, torSvc, srv)
-		return
-	}
-
 	runTUI(cfg, db, authSvc, cryptoSvc, contactSvc, msgSvc, torSvc, srv, client)
-}
-
-func runDaemon(cfg *config.Config, db *sql.DB, torSvc *tor.TorService, srv *transport.Server) {
-	slog.Info("daemon mode", "port", cfg.ListenPort)
-
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-
-	if err := torSvc.Start(ctx); err != nil {
-		slog.Error("tor start", "error", err)
-	}
-	slog.Info("tor started", "onion", torSvc.GetOnionAddress())
-
-	if err := srv.Start(); err != nil {
-		slog.Error("server start", "error", err)
-		os.Exit(1)
-	}
-
-	srv.SetAutoAccept(true)
-
-	fmt.Printf("SOTE daemon running on port %d. Onion address: %s. PID: %d\n",
-		cfg.ListenPort, torSvc.GetOnionAddress(), os.Getpid())
-
-	<-ctx.Done()
-
-	slog.Info("shutting down daemon...")
-	srv.Stop()
-	torSvc.Stop()
-	if _, err := db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
-		slog.Error("wal checkpoint", "error", err)
-	}
-	db.Close()
-	slog.Info("SOTE daemon stopped")
 }
 
 func runTUI(cfg *config.Config, db *sql.DB,

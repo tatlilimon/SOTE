@@ -29,7 +29,6 @@ type Server struct {
 	addr     string
 	tlsCfg   *tls.Config
 
-	autoAccept      bool
 	currentUsername string
 	currentPassword string
 	mu              sync.RWMutex
@@ -53,12 +52,6 @@ func NewServer(authSvc *auth.AuthService, contactSvc *contacts.Service, msgSvc *
 
 func (s *Server) WithTLS(cfg *tls.Config) {
 	s.tlsCfg = cfg
-}
-
-func (s *Server) SetAutoAccept(enabled bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.autoAccept = enabled
 }
 
 func (s *Server) Mux() *http.ServeMux {
@@ -297,22 +290,6 @@ func (s *Server) handleReceiveContactRequest(w http.ResponseWriter, r *http.Requ
 	if err := s.saveContactRequest(req.FromUsername, req.FromOnion, []byte(req.FromPublicKey)); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to queue contact request")
 		return
-	}
-
-	s.mu.RLock()
-	shouldAutoAccept := s.autoAccept && s.currentUsername != ""
-	username := s.currentUsername
-	s.mu.RUnlock()
-
-	if shouldAutoAccept {
-		contact := domain.Contact{
-			Username:     req.FromUsername,
-			OnionAddress: req.FromOnion,
-			PublicKey:    []byte(req.FromPublicKey),
-		}
-		if _, err := s.contacts.AcceptContactRequest(r.Context(), username, contact); err != nil {
-			slog.Error("daemon auto-accept contact request", "error", err)
-		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "queued"})
