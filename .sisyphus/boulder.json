@@ -27,6 +27,15 @@
       "agent": "Sisyphus-Junior",
       "category": "quick",
       "updated_at": "2026-06-05T09:29:29.572Z"
+    },
+    "todo:6": {
+      "task_key": "todo:6",
+      "task_label": "6",
+      "task_title": "**Crypto Service** (SECURITY-CRITICAL)",
+      "session_id": "ses_168df0f0fffeHqp4fZbVkPUl4Z",
+      "agent": "Sisyphus-Junior",
+      "category": "quick",
+      "updated_at": "2026-06-05T09:36:22.937Z"
     }
   }
 }

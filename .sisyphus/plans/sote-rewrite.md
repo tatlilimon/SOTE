@@ -558,7 +558,7 @@ Wave FINAL (After ALL tasks — parallel review agents):
   - Message: `feat(domain): core types and service interfaces`
   - Files: `internal/domain/types.go`, `internal/domain/interfaces.go`, `internal/domain/types_test.go`
 
-- [ ] 6. **Crypto Service** (SECURITY-CRITICAL)
+- [x] 6. **Crypto Service** (SECURITY-CRITICAL)
 
   **What to do**:
   - Create `internal/crypto/crypto.go` implementing `CryptoService` interface from domain
@@ -637,7 +637,7 @@ Wave FINAL (After ALL tasks — parallel review agents):
   - Message: `feat(crypto): bcrypt hashing, PBKDF2 key derivation, GPG encryption`
   - Files: `internal/crypto/crypto.go`, `internal/crypto/crypto_test.go`
 
-- [ ] 7. **Auth Service**
+- [x] 7. **Auth Service**
 
   **What to do**:
   - Create `internal/auth/auth.go` implementing `AuthService` interface
@@ -705,7 +705,7 @@ Wave FINAL (After ALL tasks — parallel review agents):
 
 ---
 
-- [ ] 8. **Tor Service**
+- [x] 8. **Tor Service**
 
   **What to do**:
   - Create `internal/tor/tor.go` implementing `TorService` interface
@@ -771,7 +771,7 @@ Wave FINAL (After ALL tasks — parallel review agents):
   - Message: `feat(tor): cretz/bine lifecycle with dynamic port allocation`
   - Files: `internal/tor/tor.go`, `internal/tor/tor_test.go`
 
-- [ ] 9. **Contact Service**
+- [x] 9. **Contact Service**
 
   **What to do**:
   - Create `internal/contacts/contacts.go` implementing contact management
@@ -826,7 +826,7 @@ Wave FINAL (After ALL tasks — parallel review agents):
   - Message: `feat(contacts): contact management with duplicate prevention`
   - Files: `internal/contacts/contacts.go`, `internal/contacts/contacts_test.go`
 
-- [ ] 10. **Message Service**
+- [x] 10. **Message Service**
 
   **What to do**:
   - Create `internal/messages/messages.go` implementing message send/receive/fetch
