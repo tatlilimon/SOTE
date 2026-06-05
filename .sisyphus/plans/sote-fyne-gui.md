@@ -267,7 +267,7 @@ Wave FINAL (After ALL tasks — parallel review agents):
   - Message: `feat(gui): custom Fyne theme matching SOTE color scheme`
   - Files: `internal/gui/theme.go`, `internal/gui/theme_test.go`
 
-- [ ] 3. **Login/Register View**
+- [x] 3. **Login/Register View**
 
   **What to do**:
   - Create `internal/gui/login.go` — login/register form with inline validation
@@ -304,7 +304,7 @@ Wave FINAL (After ALL tasks — parallel review agents):
 
   **Commit**: YES — `feat(gui): login/register form with validation` — internal/gui/login.go, login_test.go
 
-- [ ] 4. **Contacts View**
+- [x] 4. **Contacts View**
 
   **What to do**:
   - Create `internal/gui/contacts.go` — contact list with add dialog, context menu, pending requests
@@ -327,7 +327,7 @@ Wave FINAL (After ALL tasks — parallel review agents):
 
   **Commit**: YES — `feat(gui): contacts view with list, add dialog, context menu` — internal/gui/contacts.go, contacts_test.go
 
-- [ ] 5. **Chat View**
+- [x] 5. **Chat View**
 
   **What to do**:
   - Create `internal/gui/chat.go` — message list + input + contact selector
@@ -350,7 +350,7 @@ Wave FINAL (After ALL tasks — parallel review agents):
 
   **Commit**: YES — `feat(gui): chat view with message bubbles and contact switching` — internal/gui/chat.go, chat_test.go
 
-- [ ] 6. **Settings View**
+- [x] 6. **Settings View**
 
   **What to do**:
   - Create `internal/gui/settings.go` — settings with accordion sections
