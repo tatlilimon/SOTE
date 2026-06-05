@@ -36,6 +36,15 @@
       "agent": "Sisyphus-Junior",
       "category": "quick",
       "updated_at": "2026-06-05T09:36:22.937Z"
+    },
+    "todo:11": {
+      "task_key": "todo:11",
+      "task_label": "11",
+      "task_title": "**TLS Certificate Management**",
+      "session_id": "ses_168d399d8ffe3O4RjLjEaFIF8e",
+      "agent": "Sisyphus-Junior",
+      "category": "quick",
+      "updated_at": "2026-06-05T10:03:15.155Z"
     }
   }
 }

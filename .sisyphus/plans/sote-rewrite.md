@@ -882,7 +882,7 @@ Wave FINAL (After ALL tasks — parallel review agents):
   - Message: `feat(messages): send, receive, fetch with encryption and retry`
   - Files: `internal/messages/messages.go`, `internal/messages/messages_test.go`
 
-- [ ] 11. **TLS Certificate Management**
+- [x] 11. **TLS Certificate Management**
 
   **What to do**:
   - Create `internal/transport/tls.go` — TLS certificate management
@@ -943,7 +943,7 @@ Wave FINAL (After ALL tasks — parallel review agents):
   - Message: `feat(transport): TLS cert management with fingerprint pinning`
   - Files: `internal/transport/tls.go`, `internal/transport/tls_test.go`
 
-- [ ] 12. **HTTP Server + Handlers**
+- [x] 12. **HTTP Server + Handlers**
 
   **What to do**:
   - Create `internal/transport/server.go` — HTTP server with TLS
@@ -1016,7 +1016,7 @@ Wave FINAL (After ALL tasks — parallel review agents):
   - Message: `feat(transport): HTTPS server with 8 endpoints, async contact queue`
   - Files: `internal/transport/server.go`, `internal/transport/handlers.go`, `internal/transport/server_test.go`
 
-- [ ] 13. **HTTP Client (Tor SOCKS Proxy)**
+- [x] 13. **HTTP Client (Tor SOCKS Proxy)**
 
   **What to do**:
   - Create `internal/transport/client.go` — HTTP client that routes through Tor SOCKS proxy

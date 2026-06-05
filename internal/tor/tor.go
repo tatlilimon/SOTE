@@ -119,6 +119,21 @@ func (s *TorService) GetOnionAddress() string {
 	return s.onionAddr
 }
 
+// Dialer returns a bine SOCKS5 dialer that routes connections through the
+// Tor process. The caller can use the returned Dialer.DialContext method
+// to make proxied connections. The context is used for the initial
+// EnableNetwork call; callers must ensure the Tor process is running.
+func (s *TorService) Dialer(ctx context.Context) (*btor.Dialer, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.tor == nil {
+		return nil, fmt.Errorf("tor: not started")
+	}
+
+	return s.tor.Dialer(ctx, &btor.DialConf{})
+}
+
 // findAvailablePort probes ports starting at initialPort and incrementing
 // until a free TCP port is found. It tries up to maxAttempts before failing.
 // The returned port is not reserved — there is a TOCTOU window between the
