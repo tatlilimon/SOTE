@@ -1,3 +1,5 @@
+//go:build !nogui
+
 package gui
 
 import (
@@ -238,7 +240,7 @@ func TestOnionTruncationHelper(t *testing.T) {
 	}{
 		{"short.onion", "short.onion"},
 		{"abcdefghijklmnopqrstuvwxyz.onion", "abcdefghijklmnopqrst..."},
-		{"exactly24chars_abcdefgh.onion", "exactly24chars_abcdefg..."},
+		{"exactly24chars_abcdefgh.onion", "exactly24chars_abcde..."},
 		{"a", "a"},
 	}
 

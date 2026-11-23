@@ -1,3 +1,5 @@
+//go:build !nogui
+
 package gui
 
 import (
@@ -145,7 +147,11 @@ func (lv *LoginView) toggleMode() {
 		lv.loginBtn.Show()
 		lv.confirmPassword.Hide()
 	}
-	lv.window.Content().Refresh()
+	// The view can be toggled before it is placed in a window (tests, or a
+	// window whose content is swapped); refresh only what exists.
+	if c := lv.window.Content(); c != nil {
+		c.Refresh()
+	}
 }
 
 func (lv *LoginView) handleLogin() {

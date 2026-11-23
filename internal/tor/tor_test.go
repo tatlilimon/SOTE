@@ -3,6 +3,7 @@ package tor
 import (
 	"context"
 	"net"
+	"os"
 	"os/exec"
 	"testing"
 	"time"
@@ -11,14 +12,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func torAvailable() bool {
+func torInstalled() bool {
 	_, err := exec.LookPath("tor")
 	return err == nil
 }
 
+// torAvailable reports whether tests that launch a real Tor process may run.
+// Those tests connect to the live Tor network and wait for an onion service to
+// be published, which takes minutes and needs Internet access, so they only
+// run when SOTE_TOR_TESTS=1 is set explicitly.
+func torAvailable() bool {
+	return os.Getenv("SOTE_TOR_TESTS") == "1" && torInstalled()
+}
+
 func TestStartStop(t *testing.T) {
 	if !torAvailable() {
-		t.Skip("tor not installed")
+		t.Skip("set SOTE_TOR_TESTS=1 to run tests that start a real Tor process")
 	}
 
 	ts := New(t.TempDir(), 18080, 9060)
@@ -41,7 +50,7 @@ func TestStartStop(t *testing.T) {
 
 func TestGetOnionAddress(t *testing.T) {
 	if !torAvailable() {
-		t.Skip("tor not installed")
+		t.Skip("set SOTE_TOR_TESTS=1 to run tests that start a real Tor process")
 	}
 
 	ts := New(t.TempDir(), 18080, 9062)
@@ -63,7 +72,7 @@ func TestGetOnionAddress(t *testing.T) {
 
 func TestContextCancellation(t *testing.T) {
 	if !torAvailable() {
-		t.Skip("tor not installed")
+		t.Skip("set SOTE_TOR_TESTS=1 to run tests that start a real Tor process")
 	}
 
 	ts := New(t.TempDir(), 18080, 9064)
@@ -78,7 +87,7 @@ func TestContextCancellation(t *testing.T) {
 }
 
 func TestTorNotFound(t *testing.T) {
-	if torAvailable() {
+	if torInstalled() {
 		t.Skip("tor is installed, skipping 'not found' test")
 	}
 
@@ -90,7 +99,7 @@ func TestTorNotFound(t *testing.T) {
 
 func TestDynamicPortAllocation(t *testing.T) {
 	if !torAvailable() {
-		t.Skip("tor not installed")
+		t.Skip("set SOTE_TOR_TESTS=1 to run tests that start a real Tor process")
 	}
 
 	occupiedPort := 9070
@@ -121,7 +130,7 @@ func TestDynamicPortAllocation(t *testing.T) {
 
 func TestDoubleStart(t *testing.T) {
 	if !torAvailable() {
-		t.Skip("tor not installed")
+		t.Skip("set SOTE_TOR_TESTS=1 to run tests that start a real Tor process")
 	}
 
 	ts := New(t.TempDir(), 18080, 9075)

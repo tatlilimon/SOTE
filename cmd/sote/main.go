@@ -121,5 +121,8 @@ func runGUI(cfg *config.Config, db *sql.DB,
 	contactSvc *contacts.Service, msgSvc *messages.Service,
 	torSvc *tor.TorService, srv *transport.Server, client *transport.Client,
 ) {
-	gui.Run(cfg, db, authSvc, cryptoSvc, contactSvc, msgSvc, torSvc, srv, client)
+	if err := gui.Run(cfg, db, authSvc, cryptoSvc, contactSvc, msgSvc, torSvc, srv, client); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 }

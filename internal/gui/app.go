@@ -1,3 +1,5 @@
+//go:build !nogui
+
 package gui
 
 import (
@@ -56,7 +58,7 @@ func Run(cfg *config.Config, db *sql.DB,
 	authSvc *auth.AuthService, cryptoSvc *crypto.Service,
 	contactSvc *contacts.Service, msgSvc *messages.Service,
 	torSvc *tor.TorService, srv *transport.Server, client *transport.Client,
-) {
+) error {
 	a := app.NewWithID("sote.gui")
 	a.Settings().SetTheme(NewSOTETheme())
 	w := createWindow(a)
@@ -122,6 +124,7 @@ func Run(cfg *config.Config, db *sql.DB,
 	_ = cfg
 
 	w.ShowAndRun()
+	return nil
 }
 
 // pollMessages periodically refreshes message list and contacts for the

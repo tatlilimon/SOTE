@@ -1,3 +1,5 @@
+//go:build !nogui
+
 package gui
 
 import (
@@ -114,10 +116,11 @@ func TestLoginWrongPassword(t *testing.T) {
 
 	lv.handleLogin()
 
-	time.Sleep(200 * time.Millisecond)
-
+	// bcrypt (cost 12) runs on a background goroutine; wait for the result
+	// instead of guessing how long it takes on a busy machine.
+	assert.Eventually(t, func() bool { return !lv.Loading() }, 10*time.Second, 20*time.Millisecond,
+		"loading must be false after failed auth")
 	assert.Contains(t, lv.Error(), "invalid username or password")
-	assert.False(t, lv.Loading(), "loading must be false after failed auth")
 }
 
 func TestRegisterPasswordMismatch(t *testing.T) {

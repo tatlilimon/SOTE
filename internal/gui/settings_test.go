@@ -1,3 +1,5 @@
+//go:build !nogui
+
 package gui
 
 import (
@@ -116,9 +118,10 @@ func TestChangePasswordValidation(t *testing.T) {
 	st.handlePasswordChange()
 	assert.Contains(t, st.passStatus.Text, "do not match")
 
-	st.currentEntry.SetText("same")
-	st.newEntry.SetText("same")
-	st.confirmEntry.SetText("same")
+	// Long enough to pass the length rule, so the "must differ" rule is what fires.
+	st.currentEntry.SetText("samepass123")
+	st.newEntry.SetText("samepass123")
+	st.confirmEntry.SetText("samepass123")
 	st.handlePasswordChange()
 	assert.Contains(t, st.passStatus.Text, "differ")
 }
@@ -144,11 +147,11 @@ func TestChangePasswordSuccess(t *testing.T) {
 	assert.Equal(t, "oldpass", mock.lastCurrent)
 	assert.Equal(t, "newpass123", mock.lastNew)
 
-	// fyne.Do runs synchronously in test driver — verify cleanup
-	assert.Empty(t, st.currentEntry.Text)
-	assert.Empty(t, st.newEntry.Text)
-	assert.Empty(t, st.confirmEntry.Text)
-	assert.Empty(t, st.passStatus.Text)
+	// The changer signals done before the fyne.Do callback that clears the
+	// form has run; wait for the cleanup instead of racing it.
+	assert.Eventually(t, func() bool {
+		return st.currentEntry.Text == "" && st.newEntry.Text == "" && st.confirmEntry.Text == "" && st.passStatus.Text == ""
+	}, 5*time.Second, 10*time.Millisecond, "form must be cleared after a successful change")
 }
 
 func TestChangePasswordWrongCurrent(t *testing.T) {
@@ -171,9 +174,9 @@ func TestChangePasswordWrongCurrent(t *testing.T) {
 	}
 
 	assert.True(t, mock.called)
-	assert.Empty(t, st.currentEntry.Text)
-	assert.Empty(t, st.newEntry.Text)
-	assert.Empty(t, st.confirmEntry.Text)
+	assert.Eventually(t, func() bool {
+		return st.currentEntry.Text == "" && st.newEntry.Text == "" && st.confirmEntry.Text == ""
+	}, 5*time.Second, 10*time.Millisecond, "form must be cleared after a failed change")
 }
 
 func TestChangePasswordNoUser(t *testing.T) {

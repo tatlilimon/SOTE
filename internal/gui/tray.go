@@ -1,3 +1,5 @@
+//go:build !nogui
+
 package gui
 
 import (
@@ -108,6 +110,10 @@ func (tm *TrayManager) IsDesktopAvailable() bool {
 
 // makeCircleIcon creates a fyne.Resource containing a small (16×16) colored circle as PNG.
 func makeCircleIcon(c color.Color) fyne.Resource {
+	if c == nil {
+		// image.RGBA.Set panics on a nil colour; fall back to a neutral grey.
+		c = color.NRGBA{R: 0x9C, G: 0xA3, B: 0xAF, A: 0xFF}
+	}
 	const size = 16
 	img := image.NewRGBA(image.Rect(0, 0, size, size))
 	cx, cy, r := size/2, size/2, size/2-1
