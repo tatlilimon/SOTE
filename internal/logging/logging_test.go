@@ -304,3 +304,17 @@ func TestInitLogger_InvalidPath(t *testing.T) {
 	l := InitLogger("info", "text", "/proc/invalid/log/path/test.log")
 	assert.NotNil(t, l, "logger should not be nil with invalid path")
 }
+
+func TestLogFileIsOwnerOnly(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sote.log")
+	// A log left by an older version with group/world read access.
+	require.NoError(t, os.WriteFile(path, []byte("old\n"), 0o644))
+	w := openWriter(path)
+	if f, ok := w.(*os.File); ok {
+		defer f.Close()
+	}
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+}

@@ -106,12 +106,17 @@ func openWriter(logPath string) io.Writer {
 		return os.Stdout
 	}
 
+	// Owner-only: the log records which onion addresses and contacts the user
+	// talks to and when, which is sensitive metadata for this application.
 	dir := filepath.Dir(logPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		fmt.Fprintf(os.Stderr, "logging: failed to create log directory %s: %v\n", dir, err)
 	}
 
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err == nil {
+		_ = f.Chmod(0o600) // tighten a file created by an older version
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "logging: failed to open log file %s: %v, falling back to stderr\n", logPath, err)
 		return os.Stderr
