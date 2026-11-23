@@ -1,357 +1,407 @@
-//go:build integration
-
 package integration
 
+// End-to-end tests: two (or three) complete nodes, each with its own database,
+// keys, onion address, TLS peer server and delivery queue, talking through a
+// fake Tor that routes "<onion>:443" to the other node's loopback listener.
+// Everything above the SOCKS dialer is the production code path.
+
 import (
+	"bytes"
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/sha256"
+	"crypto/ed25519"
+	"crypto/rand"
 	"database/sql"
-	"fmt"
+	"encoding/json"
+	"errors"
+	"net"
+	"net/http"
+	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/crypto/pbkdf2"
 
 	"sote/internal/auth"
 	"sote/internal/contacts"
 	"sote/internal/crypto"
 	"sote/internal/domain"
 	"sote/internal/messages"
+	"sote/internal/peer"
 	"sote/internal/storage"
+	"sote/internal/tor"
+	"sote/internal/transport"
 )
 
-func setupDB(t *testing.T) *sql.DB {
+// fakeTor routes onion addresses to loopback listeners.
+type fakeTor struct {
+	mu     sync.Mutex
+	routes map[string]string
+}
+
+func (f *fakeTor) Start(context.Context) error { return nil }
+func (f *fakeTor) Stop() error                 { return nil }
+
+func (f *fakeTor) route(onion, addr string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.routes[net.JoinHostPort(onion, "443")] = addr
+}
+
+func (f *fakeTor) unroute(onion string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.routes, net.JoinHostPort(onion, "443"))
+}
+
+func (f *fakeTor) Dial(network, addr string) (net.Conn, error) {
+	return f.DialContext(context.Background(), network, addr)
+}
+
+func (f *fakeTor) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	f.mu.Lock()
+	target, ok := f.routes[addr]
+	f.mu.Unlock()
+	if !ok {
+		return nil, errors.New("SOCKS: general failure (host unreachable)")
+	}
+	var d net.Dialer
+	return d.DialContext(ctx, "tcp", target)
+}
+
+type testNode struct {
+	*Node
+	db    *sql.DB
+	user  *domain.User
+	onion string
+	auth  *auth.AuthService
+	msgs  *messages.Service
+}
+
+func newTestNode(t *testing.T, net_ *fakeTor, username string) *testNode {
 	t.Helper()
-	db, err := storage.Initialize(":memory:")
+	dir := t.TempDir()
+	db, err := storage.Initialize(filepath.Join(dir, "data.db"))
 	require.NoError(t, err)
 	t.Cleanup(func() { db.Close() })
-	return db
+
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	onion := tor.OnionAddressForKey(key)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	net_.route(onion, ln.Addr().String())
+
+	certs := transport.NewCertManager(filepath.Join(dir, "certs"))
+	require.NoError(t, certs.LoadOrGenerate())
+	tlsCfg, err := certs.ServerTLSConfig()
+	require.NoError(t, err)
+
+	cs := crypto.New()
+	msgs := messages.NewService(db, cs)
+	n := New(Options{
+		DB: db, Crypto: cs, Contacts: contacts.NewService(db), Messages: msgs,
+		Tor: net_, Listener: ln, OnionAddress: onion, TLS: tlsCfg,
+		DialClient: func(context.Context) (*transport.Client, error) {
+			return transport.NewClient(transport.WithProxyDialer(net_), transport.WithTimeout(5*time.Second)), nil
+		},
+		DisableWorker: true,
+		RetryBase:     time.Millisecond,
+	})
+	n.Start(context.Background())
+	t.Cleanup(func() { n.Stop() })
+	require.Eventually(t, func() bool { s, _ := n.TorStatus(); return s == EventTorReady }, 5*time.Second, 10*time.Millisecond)
+
+	authSvc := auth.New(db)
+	user, err := authSvc.Register(context.Background(), username, username+"-password")
+	require.NoError(t, err)
+	require.NoError(t, n.Login(user))
+
+	return &testNode{Node: n, db: db, user: user, onion: onion, auth: authSvc, msgs: msgs}
 }
 
-// decryptAuthFormat decrypts data produced by auth.encryptAES, which uses a
-// 16-byte salt prefix (unlike crypto.Service.EncryptAES which uses 32 bytes).
-func decryptAuthFormat(data []byte, passphrase string) ([]byte, error) {
-	if len(data) < 16 {
-		return nil, fmt.Errorf("ciphertext too short: missing salt")
-	}
-	salt := data[:16]
-	key := pbkdf2.Key([]byte(passphrase), salt, 100000, 32, sha256.New)
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, fmt.Errorf("create cipher: %w", err)
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, fmt.Errorf("create GCM: %w", err)
-	}
-	if len(data) < 16+gcm.NonceSize() {
-		return nil, fmt.Errorf("ciphertext too short: missing nonce")
-	}
-	nonce := data[16 : 16+gcm.NonceSize()]
-	ciphertext := data[16+gcm.NonceSize():]
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
-	if err != nil {
-		return nil, fmt.Errorf("decrypt: %w", err)
-	}
-	return plaintext, nil
-}
-
-// reEncryptPrivateKey fixes the private key format for FetchMessages
-// compatibility: auth.Register encrypts with a 16-byte salt, but
-// messages.Service.FetchMessages → crypto.DecryptMessage → crypto.DecryptAES
-// expects a 32-byte salt prefix.
-func reEncryptPrivateKey(t *testing.T, db *sql.DB, cryptoSvc *crypto.Service, username, password string) {
+func (tn *testNode) conversation(t *testing.T, other string) []messages.DecryptedMessage {
 	t.Helper()
-	user, err := storage.GetUser(db, username)
+	msgs, err := tn.msgs.FetchMessages(context.Background(), tn.user.Username, other, tn.user.RawPassword)
 	require.NoError(t, err)
-	privKey, err := decryptAuthFormat(user.PrivateKey, password)
-	require.NoError(t, err, "decrypt private key in auth format")
-	newEncrypted, err := cryptoSvc.EncryptAES(privKey, password)
-	require.NoError(t, err, "re-encrypt private key in crypto format")
-	_, err = db.Exec("UPDATE user SET privateKey = ? WHERE username = ?", newEncrypted, username)
-	require.NoError(t, err)
+	return msgs
 }
 
-func TestFullMessageRoundtrip(t *testing.T) {
-	db := setupDB(t)
-	ctx := context.Background()
-
-	authSvc := auth.New(db)
-	cryptoSvc := crypto.New()
-	contactSvc := contacts.NewService(db)
-	msgSvc := messages.NewService(db, cryptoSvc)
-
-	alice, err := authSvc.Register(ctx, "alice", "alicepass123")
+func pendingOutbox(t *testing.T, tn *testNode) int {
+	t.Helper()
+	n, err := storage.PendingOutboxCount(context.Background(), tn.db, tn.user.Username)
 	require.NoError(t, err)
-	require.NotEmpty(t, alice.PublicKey)
-
-	bob, err := authSvc.Register(ctx, "bob", "bobpass456")
-	require.NoError(t, err)
-	require.NotEmpty(t, bob.PublicKey)
-
-	reEncryptPrivateKey(t, db, cryptoSvc, "alice", "alicepass123")
-	reEncryptPrivateKey(t, db, cryptoSvc, "bob", "bobpass456")
-
-	err = contactSvc.AddContact(ctx, "alice", domain.Contact{
-		Username:     "bob",
-		OnionAddress: "bob.onion",
-		PublicKey:    bob.PublicKey,
-	})
-	require.NoError(t, err)
-
-	err = contactSvc.AddContact(ctx, "bob", domain.Contact{
-		Username:     "alice",
-		OnionAddress: "alice.onion",
-		PublicKey:    alice.PublicKey,
-	})
-	require.NoError(t, err)
-
-	plaintext := "Hello Bob, this is a secret GPG-encrypted message from Alice!"
-	err = msgSvc.SendMessage(ctx, "alice", "bob", "alicepass123", plaintext)
-	require.NoError(t, err)
-
-	bobMsgs, err := msgSvc.FetchMessages(ctx, "bob", "alice", "bobpass456")
-	require.NoError(t, err)
-	require.NotEmpty(t, bobMsgs)
-
-	found := false
-	for _, m := range bobMsgs {
-		if m.Content == plaintext {
-			found = true
-			assert.Equal(t, "alice", m.Sender)
-			assert.Equal(t, "bob", m.Receiver)
-			assert.NotEmpty(t, m.Timestamp)
-			break
-		}
-	}
-	assert.True(t, found, "Bob should decrypt Alice's GPG-encrypted message")
-
-	aliceMsgs, err := msgSvc.FetchMessages(ctx, "alice", "bob", "alicepass123")
-	require.NoError(t, err)
-	require.NotEmpty(t, aliceMsgs)
-
-	aliceFound := false
-	for _, m := range aliceMsgs {
-		if m.Content == plaintext {
-			aliceFound = true
-			break
-		}
-	}
-	assert.True(t, aliceFound, "Alice should decrypt her own message (AES self-copy)")
+	return n
 }
 
-func TestContactRequestFlow(t *testing.T) {
-	db := setupDB(t)
+// befriend runs the whole contact flow: a adds b by onion address, the request
+// is delivered, b accepts it.
+func befriend(t *testing.T, a, b *testNode) {
+	t.Helper()
 	ctx := context.Background()
-
-	contactSvc := contacts.NewService(db)
-
-	alice, err := auth.New(db).Register(ctx, "alice", "alicepass123")
+	c, err := a.AddContact(ctx, "https://"+b.onion+"/")
 	require.NoError(t, err)
-	bob, err := auth.New(db).Register(ctx, "bob", "bobpass456")
-	require.NoError(t, err)
+	assert.Equal(t, b.user.Username, c.ContactUsername)
 
-	err = contactSvc.AddContact(ctx, "alice", domain.Contact{
-		Username:     "bob",
-		OnionAddress: "bob.onion",
-		PublicKey:    bob.PublicKey,
-	})
-	require.NoError(t, err)
+	a.DeliverDue(ctx)
+	require.Zero(t, pendingOutbox(t, a), "contact request must be delivered")
 
-	aliceContacts, err := contactSvc.GetContacts(ctx, "alice")
+	reqs, err := b.PendingRequests(ctx)
 	require.NoError(t, err)
-	require.Len(t, aliceContacts, 1)
-	assert.Equal(t, "bob", aliceContacts[0].ContactUsername)
+	require.Len(t, reqs, 1)
+	assert.Equal(t, a.user.Username, reqs[0].FromUsername)
+	assert.Equal(t, a.onion, reqs[0].FromOnion)
 
-	ownerInfo, err := contactSvc.AcceptContactRequest(ctx, "bob", domain.Contact{
-		Username:     "alice",
-		OnionAddress: "alice.onion",
-		PublicKey:    alice.PublicKey,
-	})
+	c, err = b.AcceptRequest(ctx, reqs[0].ID)
 	require.NoError(t, err)
-	require.NotNil(t, ownerInfo)
-	assert.Equal(t, "bob", ownerInfo.Username)
-	assert.NotEmpty(t, ownerInfo.PublicKey)
-
-	bobContacts, err := contactSvc.GetContacts(ctx, "bob")
-	require.NoError(t, err)
-	require.Len(t, bobContacts, 1)
-	assert.Equal(t, "alice", bobContacts[0].ContactUsername)
+	assert.Equal(t, a.user.Username, c.ContactUsername)
 }
 
-func TestConcurrentMessages(t *testing.T) {
-	db := setupDB(t)
+func TestTwoNodesExchangeMessages(t *testing.T) {
 	ctx := context.Background()
+	tor := &fakeTor{routes: map[string]string{}}
+	alice := newTestNode(t, tor, "alice")
+	bob := newTestNode(t, tor, "bob")
 
-	authSvc := auth.New(db)
-	cryptoSvc := crypto.New()
-	contactSvc := contacts.NewService(db)
-	msgSvc := messages.NewService(db, cryptoSvc)
+	var bobEvents []Event
+	var evMu sync.Mutex
+	bob.OnEvent(func(e Event) { evMu.Lock(); bobEvents = append(bobEvents, e); evMu.Unlock() })
 
-	_, err := authSvc.Register(ctx, "alice", "alicepass123")
-	require.NoError(t, err)
-	bob, err := authSvc.Register(ctx, "bob", "bobpass456")
-	require.NoError(t, err)
+	befriend(t, alice, bob)
 
-	reEncryptPrivateKey(t, db, cryptoSvc, "alice", "alicepass123")
-	reEncryptPrivateKey(t, db, cryptoSvc, "bob", "bobpass456")
+	require.NoError(t, alice.msgs.SendMessage(ctx, "alice", "bob", alice.user.RawPassword, "hello bob, it's alice"))
+	sent := alice.conversation(t, "bob")
+	require.Len(t, sent, 1)
+	assert.Equal(t, storage.DeliveryPending, sent[0].Delivery)
 
-	err = contactSvc.AddContact(ctx, "alice", domain.Contact{
-		Username:     "bob",
-		OnionAddress: "bob.onion",
-		PublicKey:    bob.PublicKey,
-	})
-	require.NoError(t, err)
+	alice.DeliverDue(ctx)
+	sent = alice.conversation(t, "bob")
+	require.Len(t, sent, 1, "the sender sees one copy of its message")
+	assert.Equal(t, "hello bob, it's alice", sent[0].Content)
+	assert.Equal(t, storage.DeliveryDelivered, sent[0].Delivery)
 
-	const numMessages = 10
-	var wg sync.WaitGroup
-	errs := make(chan error, numMessages)
+	got := bob.conversation(t, "alice")
+	require.Len(t, got, 1)
+	assert.Equal(t, "alice", got[0].Sender)
+	assert.Equal(t, "hello bob, it's alice", got[0].Content)
+	assert.True(t, got[0].Verified, "signature must match alice's stored key")
+	assert.Equal(t, sent[0].MessageID, got[0].MessageID)
 
-	for i := 0; i < numMessages; i++ {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			msg := fmt.Sprintf("Concurrent message #%d", idx)
-			if e := msgSvc.SendMessage(ctx, "alice", "bob", "alicepass123", msg); e != nil {
-				errs <- e
-			}
-		}(i)
+	// Reply in the other direction.
+	require.NoError(t, bob.msgs.SendMessage(ctx, "bob", "alice", bob.user.RawPassword, "hi alice"))
+	bob.DeliverDue(ctx)
+	conv := alice.conversation(t, "bob")
+	require.Len(t, conv, 2)
+	assert.Equal(t, "hi alice", conv[1].Content)
+	assert.Equal(t, "bob", conv[1].Sender)
+	assert.True(t, conv[1].Verified)
+
+	evMu.Lock()
+	defer evMu.Unlock()
+	kinds := map[EventKind]int{}
+	for _, e := range bobEvents {
+		kinds[e.Kind]++
 	}
-
-	wg.Wait()
-	close(errs)
-
-	for e := range errs {
-		assert.NoError(t, e, "concurrent send should not produce errors")
-	}
-
-	bobMsgs, err := msgSvc.FetchMessages(ctx, "bob", "alice", "bobpass456")
-	require.NoError(t, err)
-	aliceMsgs, err := msgSvc.FetchMessages(ctx, "alice", "bob", "alicepass123")
-	require.NoError(t, err)
-
-	aliceContents := make(map[string]bool)
-	for _, m := range aliceMsgs {
-		if m.Content != "" {
-			aliceContents[m.Content] = true
-		}
-	}
-	assert.GreaterOrEqual(t, len(aliceContents), numMessages,
-		"Alice should see all %d sent messages (AES copies)", numMessages)
-
-	bobContents := make(map[string]bool)
-	for _, m := range bobMsgs {
-		if m.Content != "" && m.Content[0] != '[' {
-			bobContents[m.Content] = true
-		}
-	}
-	assert.GreaterOrEqual(t, len(bobContents), numMessages,
-		"Bob should see all %d received messages (GPG copies)", numMessages)
+	assert.Equal(t, 1, kinds[EventContactRequest])
+	assert.Equal(t, 1, kinds[EventMessageReceived])
 }
 
-func TestPasswordChangeAndRelogin(t *testing.T) {
-	db := setupDB(t)
+// postRaw sends a request to a node's peer server the way a remote peer would.
+func postRaw(t *testing.T, tor *fakeTor, toOnion, path string, v any) int {
+	t.Helper()
+	client := transport.NewClient(transport.WithProxyDialer(tor), transport.WithTimeout(5*time.Second))
+	err := client.PostJSON(context.Background(), toOnion, path, v)
+	if err == nil {
+		return http.StatusOK
+	}
+	var se *transport.StatusError
+	require.True(t, errors.As(err, &se), "unexpected error: %v", err)
+	return se.Code
+}
+
+func TestReplayedMessageIsStoredOnce(t *testing.T) {
 	ctx := context.Background()
+	tor := &fakeTor{routes: map[string]string{}}
+	alice := newTestNode(t, tor, "alice")
+	bob := newTestNode(t, tor, "bob")
+	befriend(t, alice, bob)
 
-	authSvc := auth.New(db)
-	cryptoSvc := crypto.New()
-	contactSvc := contacts.NewService(db)
-	msgSvc := messages.NewService(db, cryptoSvc)
-
-	initialPassword := "initialpass123"
-	newPassword := "newpassword456"
-
-	alice, err := authSvc.Register(ctx, "alice", initialPassword)
+	require.NoError(t, alice.msgs.SendMessage(ctx, "alice", "bob", alice.user.RawPassword, "only once"))
+	due, err := storage.DueOutbox(ctx, alice.db, "alice", time.Now(), 10)
 	require.NoError(t, err)
-	require.NotNil(t, alice)
+	require.Len(t, due, 1)
+	var env peer.Envelope
+	require.NoError(t, json.Unmarshal(due[0].Body, &env))
 
-	reEncryptPrivateKey(t, db, cryptoSvc, "alice", initialPassword)
+	alice.DeliverDue(ctx)
+	// An attacker (or a retry after a lost acknowledgement) sends it again.
+	assert.Equal(t, http.StatusOK, postRaw(t, tor, bob.onion, peer.PathMessage, env))
+	assert.Len(t, bob.conversation(t, "alice"), 1)
+}
 
-	bob, err := authSvc.Register(ctx, "bob", "bobpass789")
+func TestForgedAndMisdirectedMessagesAreRejected(t *testing.T) {
+	ctx := context.Background()
+	tor := &fakeTor{routes: map[string]string{}}
+	alice := newTestNode(t, tor, "alice")
+	bob := newTestNode(t, tor, "bob")
+	mallory := newTestNode(t, tor, "mallory")
+	befriend(t, alice, bob)
+
+	// Mallory is not bob's contact: her own messages are refused...
+	_, err := mallory.AddContact(ctx, bob.onion)
+	require.NoError(t, err, "mallory can store bob's public identity")
+	require.NoError(t, mallory.msgs.SendMessage(ctx, "mallory", "bob", mallory.user.RawPassword, "spam"))
+	mallory.DeliverDue(ctx)
+	conv := mallory.conversation(t, "bob")
+	require.Len(t, conv, 1)
+	assert.Equal(t, storage.DeliveryRejected, conv[0].Delivery)
+
+	// ...and claiming alice's onion address does not help: the signature is
+	// checked against alice's key.
+	mid, err := mallory.opts.Crypto.Unlock(mallory.user.EncryptedPrivateKey, mallory.user.RawPassword)
 	require.NoError(t, err)
-	reEncryptPrivateKey(t, db, cryptoSvc, "bob", "bobpass789")
-
-	err = contactSvc.AddContact(ctx, "alice", domain.Contact{
-		Username:     "bob",
-		OnionAddress: "bob.onion",
-		PublicKey:    bob.PublicKey,
-	})
+	defer mid.Close()
+	bobContact, err := storage.GetContact(ctx, mallory.db, "mallory", "bob")
 	require.NoError(t, err)
-	err = contactSvc.AddContact(ctx, "bob", domain.Contact{
-		Username:     "alice",
-		OnionAddress: "alice.onion",
-		PublicKey:    alice.PublicKey,
-	})
+	payload, err := mid.EncryptFor(bobContact.PublicKey, []byte("I am alice, send money"))
 	require.NoError(t, err)
-
-	// Bob sends two GPG-encrypted messages to Alice before password change.
-	msg1 := "Message from Bob before Alice changes password - one"
-	msg2 := "Message from Bob before Alice changes password - two"
-	require.NoError(t, msgSvc.SendMessage(ctx, "bob", "alice", "bobpass789", msg1))
-	require.NoError(t, msgSvc.SendMessage(ctx, "bob", "alice", "bobpass789", msg2))
-
-	beforeMsgs, err := msgSvc.FetchMessages(ctx, "alice", "bob", initialPassword)
+	forged := peer.Envelope{Version: 1, MessageID: peer.NewID(), FromOnion: alice.onion, ToOnion: bob.onion, SentAt: time.Now().Unix(), Payload: payload}
+	forged.Signature, err = mid.SignDetached(forged.SigningBytes())
 	require.NoError(t, err)
-	require.NotEmpty(t, beforeMsgs)
+	assert.Equal(t, http.StatusUnauthorized, postRaw(t, tor, bob.onion, peer.PathMessage, forged))
 
-	user, err := storage.GetUser(db, "alice")
+	// A genuine envelope for someone else is refused by bob.
+	misdirected := forged
+	misdirected.ToOnion = mallory.onion
+	assert.Equal(t, http.StatusMisdirectedRequest, postRaw(t, tor, bob.onion, peer.PathMessage, misdirected))
+
+	// Garbage and oversized bodies.
+	assert.Equal(t, http.StatusBadRequest, postRaw(t, tor, bob.onion, peer.PathMessage, map[string]any{"version": 1}))
+	big := forged
+	big.Payload = string(bytes.Repeat([]byte("A"), peer.MaxEnvelopeBytes))
+	assert.Equal(t, http.StatusRequestEntityTooLarge, postRaw(t, tor, bob.onion, peer.PathMessage, big))
+
+	assert.Empty(t, bob.conversation(t, "alice"), "nothing forged reached bob's history")
+}
+
+func TestContactRequestForSomeoneElsesOnionIsNotAccepted(t *testing.T) {
+	ctx := context.Background()
+	tor := &fakeTor{routes: map[string]string{}}
+	alice := newTestNode(t, tor, "alice")
+	bob := newTestNode(t, tor, "bob")
+	mallory := newTestNode(t, tor, "mallory")
+
+	// Mallory introduces her own key under alice's onion address. The
+	// signature is valid (it is her key), so bob sees a pending request...
+	mid, err := mallory.opts.Crypto.Unlock(mallory.user.EncryptedPrivateKey, mallory.user.RawPassword)
 	require.NoError(t, err)
-
-	privKey, err := cryptoSvc.DecryptAES(user.PrivateKey, initialPassword)
+	defer mid.Close()
+	req, err := contacts.BuildRequest("alice", alice.onion, bob.onion, mid, time.Now())
 	require.NoError(t, err)
-
-	newEncryptedPriv, err := cryptoSvc.EncryptAES(privKey, newPassword)
+	assert.Equal(t, http.StatusOK, postRaw(t, tor, bob.onion, peer.PathContactRequest, req))
+	reqs, err := bob.PendingRequests(ctx)
 	require.NoError(t, err)
+	require.Len(t, reqs, 1)
 
-	newHash, err := cryptoSvc.HashPassword(newPassword)
+	// ...but accepting it fetches the identity alice's address really serves,
+	// and the keys differ.
+	_, err = bob.AcceptRequest(ctx, reqs[0].ID)
+	assert.ErrorIs(t, err, contacts.ErrIdentityMismatch)
+	_, err = storage.GetContactByOnion(ctx, bob.db, "bob", alice.onion)
+	assert.ErrorIs(t, err, storage.ErrContactNotFound)
+
+	// A request with a signature that does not match the introduced key.
+	req2, err := contacts.BuildRequest("mallory", mallory.onion, bob.onion, mid, time.Now())
 	require.NoError(t, err)
-
-	_, err = db.Exec("UPDATE user SET privateKey = ?, password = ? WHERE username = ?",
-		newEncryptedPriv, newHash, "alice")
+	aid, err := alice.opts.Crypto.Unlock(alice.user.EncryptedPrivateKey, alice.user.RawPassword)
 	require.NoError(t, err)
+	defer aid.Close()
+	req2.FromPublicKey = string(aid.PublicKey())
+	assert.Equal(t, http.StatusUnauthorized, postRaw(t, tor, bob.onion, peer.PathContactRequest, req2))
+}
 
-	_, err = authSvc.Login(ctx, "alice", initialPassword)
-	assert.Error(t, err, "old password must no longer authenticate")
+func TestUndeliveredMessagesWaitForThePeer(t *testing.T) {
+	ctx := context.Background()
+	tor := &fakeTor{routes: map[string]string{}}
+	alice := newTestNode(t, tor, "alice")
+	bob := newTestNode(t, tor, "bob")
+	befriend(t, alice, bob)
 
-	loggedIn, err := authSvc.Login(ctx, "alice", newPassword)
+	// Bob goes offline: his peer server stops (closing kept-alive
+	// connections) and his onion address is unreachable.
+	tor.unroute(bob.onion)
+	require.NoError(t, bob.Server().Shutdown(ctx))
+	require.NoError(t, alice.msgs.SendMessage(ctx, "alice", "bob", alice.user.RawPassword, "are you there?"))
+	alice.DeliverDue(ctx)
+	assert.Equal(t, 1, pendingOutbox(t, alice), "kept for a later attempt")
+	assert.Equal(t, storage.DeliveryPending, alice.conversation(t, "bob")[0].Delivery)
+
+	// Bob comes back but is not logged in yet: 503, still pending.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	assert.Equal(t, "alice", loggedIn.Username)
-	assert.Equal(t, newPassword, loggedIn.RawPassword)
+	go bob.Server().Serve(ln)
+	tor.route(bob.onion, ln.Addr().String())
+	bob.Logout()
+	time.Sleep(5 * time.Millisecond) // RetryBase is 1ms in tests
+	alice.DeliverDue(ctx)
+	assert.Equal(t, 1, pendingOutbox(t, alice))
 
-	// Old GPG-encrypted messages must still decrypt because Alice's private
-	// key was re-encrypted with the new password. (AES self-copies sent BY
-	// Alice would use the old password as key and won't survive — that's
-	// expected; only GPG messages TO Alice will decrypt.)
-	aliceMsgs, err := msgSvc.FetchMessages(ctx, "alice", "bob", newPassword)
+	require.NoError(t, bob.Login(bob.user))
+	time.Sleep(10 * time.Millisecond)
+	alice.DeliverDue(ctx)
+	assert.Zero(t, pendingOutbox(t, alice))
+	assert.Equal(t, "are you there?", bob.conversation(t, "alice")[0].Content)
+}
+
+func TestIdentityEndpointAndSelfAdd(t *testing.T) {
+	ctx := context.Background()
+	tor := &fakeTor{routes: map[string]string{}}
+	alice := newTestNode(t, tor, "alice")
+
+	id, err := alice.Identity(ctx)
 	require.NoError(t, err)
-
-	found1, found2 := false, false
-	for _, m := range aliceMsgs {
-		switch m.Content {
-		case msg1:
-			found1 = true
-		case msg2:
-			found2 = true
-		}
-	}
-	assert.True(t, found1, "GPG message 1 must decrypt after password change")
-	assert.True(t, found2, "GPG message 2 must decrypt after password change")
-
-	msg3 := "Message after password change"
-	require.NoError(t, msgSvc.SendMessage(ctx, "alice", "bob", newPassword, msg3))
-
-	newMsgs, err := msgSvc.FetchMessages(ctx, "alice", "bob", newPassword)
+	assert.Equal(t, "alice", id.Username)
+	assert.Equal(t, alice.onion, id.Onion)
+	// Same key (the armor headers may be ordered differently).
+	want, err := crypto.PublicKeyFingerprint(alice.user.PublicKey)
 	require.NoError(t, err)
-	found3 := false
-	for _, m := range newMsgs {
-		if m.Content == msg3 {
-			found3 = true
-			break
-		}
-	}
-	assert.True(t, found3, "new messages must be sendable and decryptable after password change")
+	got, err := crypto.PublicKeyFingerprint([]byte(id.PublicKey))
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
+
+	_, err = alice.AddContact(ctx, alice.onion)
+	assert.ErrorIs(t, err, contacts.ErrSelfOnion)
+	_, err = alice.AddContact(ctx, "not-an-onion.example")
+	assert.ErrorIs(t, err, peer.ErrInvalidOnion)
+
+	alice.Logout()
+	_, err = alice.Identity(ctx)
+	assert.ErrorIs(t, err, peer.ErrNotReady)
+}
+
+func TestPasswordChangeKeepsTheConversationReadable(t *testing.T) {
+	ctx := context.Background()
+	tor := &fakeTor{routes: map[string]string{}}
+	alice := newTestNode(t, tor, "alice")
+	bob := newTestNode(t, tor, "bob")
+	befriend(t, alice, bob)
+
+	require.NoError(t, alice.msgs.SendMessage(ctx, "alice", "bob", alice.user.RawPassword, "before"))
+	alice.DeliverDue(ctx)
+	require.NoError(t, bob.msgs.SendMessage(ctx, "bob", "alice", bob.user.RawPassword, "reply"))
+	bob.DeliverDue(ctx)
+
+	require.NoError(t, alice.auth.ChangePassword(ctx, "alice", alice.user.RawPassword, "a-brand-new-pass"))
+	alice.Logout()
+	user, err := alice.auth.Login(ctx, "alice", "a-brand-new-pass")
+	require.NoError(t, err)
+	require.NoError(t, alice.Login(user))
+	alice.user = user
+
+	conv := alice.conversation(t, "bob")
+	require.Len(t, conv, 2)
+	assert.Equal(t, "before", conv[0].Content)
+	assert.Equal(t, "reply", conv[1].Content)
 }

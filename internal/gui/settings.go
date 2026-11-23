@@ -65,6 +65,30 @@ type Settings struct {
 	creditLabel  *widget.Label
 
 	accordion *widget.Accordion
+
+	bridgesCheck *widget.Check
+	bridgesEntry *widget.Entry
+}
+
+// SetBridges adds the Tor bridges section: a switch, the bridge lines and a
+// save button. Changes apply the next time SOTE starts Tor.
+func (s *Settings) SetBridges(use bool, text string, saver func(use bool, text string) error) {
+	s.bridgesCheck = widget.NewCheck("Use bridges (for networks that block Tor)", nil)
+	s.bridgesCheck.SetChecked(use)
+	s.bridgesEntry = widget.NewMultiLineEntry()
+	s.bridgesEntry.SetPlaceHolder("obfs4 192.0.2.10:443 FINGERPRINT cert=... iat-mode=0\nClientTransportPlugin obfs4 exec /usr/bin/lyrebird")
+	s.bridgesEntry.SetText(text)
+	s.bridgesEntry.SetMinRowsVisible(5)
+	save := widget.NewButtonWithIcon("Save Bridges", theme.DocumentSaveIcon(), func() {
+		if err := saver(s.bridgesCheck.Checked, s.bridgesEntry.Text); err != nil {
+			dialog.ShowError(err, s.win)
+			return
+		}
+		dialog.ShowInformation("Bridges Saved", "Restart SOTE to connect with the new bridge settings.", s.win)
+	})
+	help := widget.NewLabel("One bridge per line (from bridges.torproject.org). obfs4, snowflake and webtunnel bridges also need a ClientTransportPlugin line.")
+	help.Wrapping = fyne.TextWrapWord
+	s.accordion.Append(widget.NewAccordionItem("Tor Bridges", container.NewVBox(s.bridgesCheck, help, s.bridgesEntry, save)))
 }
 
 func NewSettings(win fyne.Window, user *domain.User, changer PasswordChanger) *Settings {
@@ -132,8 +156,9 @@ func (s *Settings) buildAccountSection() fyne.CanvasObject {
 	s.onionLabel.Wrapping = fyne.TextTruncate
 
 	s.copyBtn = widget.NewButtonWithIcon("Copy", theme.ContentCopyIcon(), func() {
-		if onion != "" && onion != "Not available" {
-			s.win.Clipboard().SetContent(onion)
+		// Read the address at click time: it is set after login.
+		if s.user != nil && s.user.OnionAddress != "" {
+			s.win.Clipboard().SetContent(s.user.OnionAddress)
 		}
 	})
 
@@ -224,6 +249,9 @@ func (s *Settings) handlePasswordChange() {
 			if err != nil {
 				dialog.ShowError(err, s.win)
 			} else {
+				if s.user != nil {
+					s.user.RawPassword = newPass
+				}
 				dialog.ShowInformation("Password Changed",
 					"Password changed successfully.", s.win)
 			}

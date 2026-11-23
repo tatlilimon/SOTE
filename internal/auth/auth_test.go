@@ -201,7 +201,10 @@ func TestChangePassword(t *testing.T) {
 	id, err := cs.Unlock(loggedIn.EncryptedPrivateKey, "newpassword2")
 	require.NoError(t, err, "private key must open with the new password")
 	defer id.Close()
-	assert.Equal(t, user.PublicKey, id.PublicKey())
+	// Compare fingerprints: gopenpgp orders armor headers nondeterministically.
+	wantFP, err := crypto.PublicKeyFingerprint(user.PublicKey)
+	require.NoError(t, err)
+	assert.Equal(t, wantFP, id.Fingerprint())
 
 	msgs, err := storage.GetMessages(svc.db, "alice", "bob")
 	require.NoError(t, err)

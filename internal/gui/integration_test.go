@@ -32,6 +32,7 @@ func setupIntegrationDB(t *testing.T) (authSvc *auth.AuthService, msgSvc *messag
 	cs := crypto.New()
 	authSvc = auth.New(db)
 	msgSvc = messages.NewService(db, cs)
+	msgSvc.SetLocalOnion(func() string { return "local.onion" })
 
 	user, err := authSvc.Register(context.Background(), "alice", "password123")
 	require.NoError(t, err)
@@ -88,6 +89,7 @@ func TestFullLoginFlow(t *testing.T) {
 		loginView.Content().Hide()
 
 		cv := NewChatView(msgSvc, username, rawPassword, contactList)
+		cv.waitLoads()
 		tabs.Append(container.NewTabItem("Chat", cv.Container()))
 		tabs.Append(container.NewTabItem("Contacts", widget.NewLabel("Contacts Tab")))
 		tabs.Append(container.NewTabItem("Settings", widget.NewLabel("Settings Tab")))
@@ -154,6 +156,7 @@ func TestIncomingMessageNotification(t *testing.T) {
 	_, msgSvc, contactList, username, rawPassword := setupIntegrationDB(t)
 
 	cv := NewChatView(msgSvc, username, rawPassword, contactList)
+	cv.waitLoads()
 	require.NotNil(t, cv)
 	require.Equal(t, "bob", cv.SelectedContact())
 
@@ -211,6 +214,7 @@ func TestLoginToTabsTransition(t *testing.T) {
 		loginView.Content().Hide()
 
 		cv := NewChatView(msgSvc, username, rawPassword, contactList)
+		cv.waitLoads()
 		cp := NewContactsPage(nil, username, w)
 		sv := NewSettings(w, user, nil)
 

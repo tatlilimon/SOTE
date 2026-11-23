@@ -46,12 +46,15 @@ func setupChatTest(t *testing.T) (*messages.Service, []storage.Contact) {
 	contacts, err := storage.GetAllContacts(db, "alice")
 	require.NoError(t, err)
 
-	return messages.NewService(db, cs), contacts
+	svc := messages.NewService(db, cs)
+	svc.SetLocalOnion(func() string { return "alice.onion" })
+	return svc, contacts
 }
 
 func TestChatViewRenders(t *testing.T) {
 	svc, contacts := setupChatTest(t)
 	cv := NewChatView(svc, "alice", "password", contacts)
+	cv.waitLoads()
 
 	require.NotNil(t, cv)
 	require.NotNil(t, cv.Container())
@@ -70,6 +73,7 @@ func TestSendMessage(t *testing.T) {
 
 	svc, contacts := setupChatTest(t)
 	cv := NewChatView(svc, "alice", "password", contacts)
+	cv.waitLoads()
 
 	assert.Equal(t, "bob", cv.SelectedContact())
 	assert.True(t, cv.sendBtn.Disabled())
@@ -102,6 +106,7 @@ func TestReceiveMessage(t *testing.T) {
 	require.NoError(t, svc.SendMessage(t.Context(), "alice", "bob", "password", "Hi from alice"))
 
 	cv := NewChatView(svc, "alice", "password", contacts)
+	cv.waitLoads()
 
 	time.Sleep(500 * time.Millisecond)
 
@@ -121,6 +126,7 @@ func TestContactSwitch(t *testing.T) {
 	svc, contacts := setupChatTest(t)
 
 	cv := NewChatView(svc, "alice", "password", contacts)
+	cv.waitLoads()
 	assert.Equal(t, "bob", cv.SelectedContact())
 
 	cv.SetContacts(contacts)
@@ -134,6 +140,7 @@ func TestAutoScroll(t *testing.T) {
 	svc, contacts := setupChatTest(t)
 
 	cv := NewChatView(svc, "alice", "password", contacts)
+	cv.waitLoads()
 	require.NotNil(t, cv.scroll)
 
 	cv.displayMsgs = []messages.DecryptedMessage{
@@ -158,6 +165,7 @@ func TestSendButtonDisabled_NoContact(t *testing.T) {
 
 	svc, _ := setupChatTest(t)
 	cv := NewChatView(svc, "alice", "password", nil)
+	cv.waitLoads()
 
 	assert.True(t, cv.sendBtn.Disabled())
 
@@ -170,6 +178,7 @@ func TestSendButtonEnabled(t *testing.T) {
 
 	svc, contacts := setupChatTest(t)
 	cv := NewChatView(svc, "alice", "password", contacts)
+	cv.waitLoads()
 
 	assert.True(t, cv.sendBtn.Disabled())
 
@@ -181,6 +190,7 @@ func TestMessageBubbleRendering(t *testing.T) {
 	svc, contacts := setupChatTest(t)
 
 	cv := NewChatView(svc, "alice", "password", contacts)
+	cv.waitLoads()
 
 	cv.displayMsgs = []messages.DecryptedMessage{
 		{Sender: "alice", Content: "Hello from me", Timestamp: "2025-01-01T12:00:00Z"},
@@ -196,6 +206,7 @@ func TestEmptyStateDisplayed(t *testing.T) {
 	svc, contacts := setupChatTest(t)
 
 	cv := NewChatView(svc, "alice", "password", contacts)
+	cv.waitLoads()
 
 	cv.displayMsgs = []messages.DecryptedMessage{}
 	cv.refreshMessageList()
@@ -234,6 +245,7 @@ func TestOnSubmittedSendsMessage(t *testing.T) {
 
 	svc, contacts := setupChatTest(t)
 	cv := NewChatView(svc, "alice", "password", contacts)
+	cv.waitLoads()
 
 	cv.input.SetText("Enter send test")
 	assert.False(t, cv.sendBtn.Disabled())

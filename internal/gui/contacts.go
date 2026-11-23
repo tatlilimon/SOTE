@@ -14,8 +14,10 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
-	domain "sote/internal/domain"
 	contactSvc "sote/internal/contacts"
+	domain "sote/internal/domain"
+	"sote/internal/integration"
+	"sote/internal/peer"
 	st "sote/internal/storage"
 )
 
@@ -126,6 +128,12 @@ type ContactsPage struct {
 	contacts    []st.Contact
 	pendingReqs []st.Contact
 
+	// node, when set, makes add/accept/decline/delete go over the network.
+	node            *integration.Node
+	selectedPending int
+	// OnContactsChanged is called with the new list after a reload.
+	OnContactsChanged func([]st.Contact)
+
 	List        *widget.List
 	PendingList *widget.List
 	Accordion   *widget.Accordion
@@ -147,6 +155,9 @@ func NewContactsPage(svc *contactSvc.Service, currentUser string, win fyne.Windo
 	p.buildUI()
 	return p
 }
+
+// SetNode connects the page to the node.
+func (p *ContactsPage) SetNode(n *integration.Node) { p.node = n }
 
 func (p *ContactsPage) Content() fyne.CanvasObject {
 	return p.content
@@ -186,11 +197,22 @@ func (p *ContactsPage) buildUI() {
 			}
 		},
 	)
+	p.selectedPending = -1
+	p.PendingList.OnSelected = func(id widget.ListItemID) { p.selectedPending = id }
+	p.PendingList.OnUnselected = func(widget.ListItemID) { p.selectedPending = -1 }
 
+	// The buttons used to do nothing; they act on the selected request.
+	withSelected := func(f func(st.Contact)) func() {
+		return func() {
+			if p.selectedPending >= 0 && p.selectedPending < len(p.pendingReqs) {
+				f(p.pendingReqs[p.selectedPending])
+			}
+		}
+	}
 	pendingSection := container.NewBorder(
 		container.NewHBox(
-			widget.NewButtonWithIcon("Accept", theme.ConfirmIcon(), func() {}),
-			widget.NewButtonWithIcon("Decline", theme.CancelIcon(), func() {}),
+			widget.NewButtonWithIcon("Accept", theme.ConfirmIcon(), withSelected(p.handleAcceptPending)),
+			widget.NewButtonWithIcon("Decline", theme.CancelIcon(), withSelected(p.handleDeclinePending)),
 		), nil, nil, nil, p.PendingList)
 
 	accItem := widget.NewAccordionItem("Pending Requests", pendingSection)
@@ -229,8 +251,18 @@ func (p *ContactsPage) refreshContent() {
 }
 
 func (p *ContactsPage) LoadContacts() {
+	node := p.node
 	go func() {
 		contacts, err := p.contactSvc.GetContacts(context.Background(), p.currentUser)
+		var pending []st.Contact
+		if node != nil {
+			if reqs, perr := node.PendingRequests(context.Background()); perr == nil {
+				for _, r := range reqs {
+					// ID carries the request ID for accept/decline.
+					pending = append(pending, st.Contact{ID: int(r.ID), ContactUsername: r.FromUsername, OnionAddress: r.FromOnion})
+				}
+			}
+		}
 		fyne.Do(func() {
 			if err != nil {
 				dialog.ShowError(err, p.window)
@@ -239,6 +271,12 @@ func (p *ContactsPage) LoadContacts() {
 			p.contacts = contacts
 			p.refreshContent()
 			p.List.Refresh()
+			if node != nil {
+				p.SetPendingRequests(pending)
+			}
+			if p.OnContactsChanged != nil {
+				p.OnContactsChanged(contacts)
+			}
 		})
 	}()
 }
@@ -269,6 +307,25 @@ func (p *ContactsPage) showAddContactDialog() {
 			return
 		}
 		addr := strings.TrimSpace(onionEntry.Text)
+		if p.node != nil {
+			onion, err := peer.NormalizeOnion(addr)
+			if err != nil {
+				dialog.ShowError(errors.New("not a valid v3 onion address (56 characters followed by .onion)"), p.window)
+				return
+			}
+			node := p.node
+			go func() {
+				_, err := node.AddContact(context.Background(), onion)
+				fyne.Do(func() {
+					if err != nil {
+						dialog.ShowError(err, p.window)
+						return
+					}
+					p.LoadContacts()
+				})
+			}()
+			return
+		}
 		if addr == "" || !strings.HasSuffix(addr, ".onion") {
 			return
 		}
@@ -337,6 +394,21 @@ func (p *ContactsPage) showDeleteConfirm(c st.Contact) {
 }
 
 func (p *ContactsPage) deleteContact(c st.Contact) {
+	if node := p.node; node != nil {
+		// Delete from the database too (it used to vanish only from the
+		// list and come back on the next reload).
+		go func() {
+			err := node.DeleteContact(context.Background(), c.ID)
+			fyne.Do(func() {
+				if err != nil {
+					dialog.ShowError(err, p.window)
+					return
+				}
+				p.LoadContacts()
+			})
+		}()
+		return
+	}
 	filtered := make([]st.Contact, 0, len(p.contacts))
 	for _, existing := range p.contacts {
 		if existing.ID != c.ID {
@@ -347,6 +419,20 @@ func (p *ContactsPage) deleteContact(c st.Contact) {
 }
 
 func (p *ContactsPage) handleAcceptPending(c st.Contact) {
+	if node := p.node; node != nil {
+		go func() {
+			_, err := node.AcceptRequest(context.Background(), int64(c.ID))
+			fyne.Do(func() {
+				if err != nil {
+					dialog.ShowError(err, p.window)
+					return
+				}
+				p.removePending(c)
+				p.LoadContacts()
+			})
+		}()
+		return
+	}
 	go func() {
 		contact := domain.Contact{
 			Username:     c.ContactUsername,
@@ -366,6 +452,19 @@ func (p *ContactsPage) handleAcceptPending(c st.Contact) {
 }
 
 func (p *ContactsPage) handleDeclinePending(c st.Contact) {
+	if node := p.node; node != nil {
+		go func() {
+			err := node.DeclineRequest(context.Background(), int64(c.ID))
+			fyne.Do(func() {
+				if err != nil {
+					dialog.ShowError(err, p.window)
+					return
+				}
+				p.removePending(c)
+			})
+		}()
+		return
+	}
 	p.removePending(c)
 }
 

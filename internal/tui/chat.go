@@ -41,6 +41,7 @@ type ChatModel struct {
 
 	db     *sql.DB
 	crypto domain.CryptoService
+	svc    *messages.Service
 
 	width  int
 	height int
@@ -184,9 +185,25 @@ func (m *ChatModel) TextareaValue() string                 { return m.textarea.V
 func (m *ChatModel) Loading() bool                         { return m.loading }
 func (m *ChatModel) Error() string                         { return m.errMsg }
 
+// Focus gives the chat keyboard focus (and clears a previous Esc, so the
+// view can be entered again).
 func (m *ChatModel) Focus() tea.Cmd {
 	m.focused = true
+	m.quitting = false
 	return m.textarea.Focus()
+}
+
+// SetService makes the chat use the shared, node-connected message service.
+func (m *ChatModel) SetService(svc *messages.Service) { m.svc = svc }
+
+// SetPassword updates the password after it was changed in Settings.
+func (m *ChatModel) SetPassword(p string) { m.password = p }
+
+func (m *ChatModel) service() *messages.Service {
+	if m.svc != nil {
+		return m.svc
+	}
+	return messages.NewService(m.db, m.crypto)
 }
 
 func (m *ChatModel) Blur() {
@@ -196,8 +213,14 @@ func (m *ChatModel) Blur() {
 
 func (m *ChatModel) SetContacts(contacts []storage.Contact) {
 	m.contacts = contacts
-	if m.contactName == "" && len(contacts) > 0 {
-		m.contactIdx = 0
+	for i, c := range contacts {
+		if c.ContactUsername == m.contactName {
+			m.contactIdx = i
+			return
+		}
+	}
+	m.contactIdx, m.contactName = 0, ""
+	if len(contacts) > 0 {
 		m.contactName = contacts[0].ContactUsername
 	}
 }
@@ -264,14 +287,31 @@ func (m *ChatModel) formatMessage(msg messages.DecryptedMessage) string {
 	isSent := msg.Sender == m.username
 	var line string
 	if isSent {
-		line = fmt.Sprintf("%s %s", msg.Content, ts)
+		line = fmt.Sprintf("%s %s%s", msg.Content, ts, deliveryMark(msg.Delivery))
 	} else {
-		line = fmt.Sprintf("%s %s: %s", ts, msg.Sender, msg.Content)
+		warn := ""
+		if !msg.Verified {
+			warn = "⚠ "
+		}
+		line = fmt.Sprintf("%s %s%s: %s", ts, warn, msg.Sender, msg.Content)
 	}
 	if isSent {
 		return lipgloss.PlaceHorizontal(m.width, lipgloss.Right, SentMsgStyle.Render(line))
 	}
 	return lipgloss.PlaceHorizontal(m.width, lipgloss.Left, ReceivedMsgStyle.Render(line))
+}
+
+// deliveryMark shows whether a sent message reached the contact.
+func deliveryMark(state string) string {
+	switch state {
+	case storage.DeliveryPending:
+		return " …"
+	case storage.DeliveryDelivered:
+		return " ✓"
+	case storage.DeliveryRejected:
+		return " ✗ not accepted"
+	}
+	return ""
 }
 
 func formatTimestamp(ts string) string {
@@ -298,10 +338,9 @@ func (m *ChatModel) loadMessagesCmd() tea.Cmd {
 		return nil
 	}
 	username, contact, password := m.username, m.contactName, m.password
-	db, crypto := m.db, m.crypto
+	svc := m.service()
 
 	return func() tea.Msg {
-		svc := messages.NewService(db, crypto)
 		msgs, err := svc.FetchMessages(context.Background(), username, contact, password)
 		return msgsLoadedMsg{messages: msgs, err: err}
 	}
@@ -309,10 +348,9 @@ func (m *ChatModel) loadMessagesCmd() tea.Cmd {
 
 func (m *ChatModel) sendMessageCmd(text string) tea.Cmd {
 	sender, receiver, password := m.username, m.contactName, m.password
-	db, crypto := m.db, m.crypto
+	svc := m.service()
 
 	return func() tea.Msg {
-		svc := messages.NewService(db, crypto)
 		err := svc.SendMessage(context.Background(), sender, receiver, password, text)
 		return msgSentMsg{err: err}
 	}

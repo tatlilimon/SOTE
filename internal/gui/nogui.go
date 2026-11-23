@@ -6,16 +6,9 @@
 package gui
 
 import (
-	"database/sql"
 	"errors"
 
-	"sote/internal/auth"
-	"sote/internal/config"
-	"sote/internal/contacts"
-	"sote/internal/crypto"
-	"sote/internal/messages"
-	"sote/internal/tor"
-	"sote/internal/transport"
+	"sote/internal/integration"
 )
 
 // ErrNotBuilt is returned when the binary was built with the nogui tag.
@@ -25,10 +18,6 @@ var ErrNotBuilt = errors.New("this SOTE binary was built without the desktop int
 const Available = false
 
 // Run always fails in nogui builds.
-func Run(cfg *config.Config, db *sql.DB,
-	authSvc *auth.AuthService, cryptoSvc *crypto.Service,
-	contactSvc *contacts.Service, msgSvc *messages.Service,
-	torSvc *tor.TorService, srv *transport.Server, client *transport.Client,
-) error {
+func Run(integration.Deps) error {
 	return ErrNotBuilt
 }

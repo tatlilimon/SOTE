@@ -31,7 +31,7 @@ func setupTestModel(t *testing.T) (Model, *sql.DB, func()) {
 	contactSvc := contacts.NewService(db)
 	msgSvc := messages.NewService(db, cryptoSvc)
 	torSvc := tor.New(t.TempDir(), 0, 0)
-	srv := transport.NewServer(authSvc, contactSvc, msgSvc, torSvc, db, ":0")
+	srv := transport.NewServer(nil)
 	client := transport.NewClient()
 
 	m := NewModel(cfg, db, authSvc, cryptoSvc, contactSvc, msgSvc, torSvc, srv, client)

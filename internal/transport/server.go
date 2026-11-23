@@ -3,50 +3,45 @@ package transport
 import (
 	"context"
 	"crypto/tls"
-	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
-	"sote/internal/auth"
-	"sote/internal/contacts"
-	"sote/internal/domain"
-	"sote/internal/messages"
+	"sote/internal/peer"
 )
 
-type Server struct {
-	auth     *auth.AuthService
-	contacts *contacts.Service
-	messages *messages.Service
-	tor      domain.TorService
-	db       *sql.DB
-	mux      *http.ServeMux
-	httpSrv  *http.Server
-	addr     string
-	tlsCfg   *tls.Config
-
-	currentUsername string
-	currentPassword string
-	mu              sync.RWMutex
+// PeerHandler is implemented by the node: it answers what other SOTE nodes
+// ask for over the onion service.
+type PeerHandler interface {
+	Identity(ctx context.Context) (*peer.Identity, error)
+	HandleContactRequest(ctx context.Context, r *peer.ContactRequest) error
+	HandleMessage(ctx context.Context, e *peer.Envelope) error
 }
 
-func NewServer(authSvc *auth.AuthService, contactSvc *contacts.Service, msgSvc *messages.Service, torSvc domain.TorService, db *sql.DB, addr string) *Server {
-	s := &Server{
-		auth:     authSvc,
-		contacts: contactSvc,
-		messages: msgSvc,
-		tor:      torSvc,
-		db:       db,
-		addr:     addr,
-	}
+// Server serves the peer protocol. It is reached only through the onion
+// service and must listen on loopback; it exposes nothing but the three peer
+// endpoints. (Earlier versions also exposed register, login, add-contact,
+// send-message and fetch-messages without authentication, on all interfaces.)
+type Server struct {
+	handler PeerHandler
+	mux     *http.ServeMux
+	tlsCfg  *tls.Config
 
-	s.initContactRequestsTable()
+	mu      sync.Mutex
+	httpSrv *http.Server
+}
+
+// NewServer creates a peer protocol server.
+func NewServer(h PeerHandler) *Server {
+	s := &Server{handler: h}
 	s.registerRoutes()
-
 	return s
 }
 
@@ -54,60 +49,64 @@ func (s *Server) WithTLS(cfg *tls.Config) {
 	s.tlsCfg = cfg
 }
 
-func (s *Server) Mux() *http.ServeMux {
-	return s.mux
-}
+// Handler returns the HTTP handler (for tests).
+func (s *Server) Handler() http.Handler { return s.mux }
 
-func (s *Server) Start() error {
-	s.httpSrv = &http.Server{
-		Addr:    s.addr,
-		Handler: s.mux,
-		TLSConfig: s.tlsCfg,
+// Serve accepts connections on ln until Stop is called. ln must be a loopback
+// listener (the onion service forwards to it).
+func (s *Server) Serve(ln net.Listener) error {
+	if addr, ok := ln.Addr().(*net.TCPAddr); ok && !addr.IP.IsLoopback() {
+		return fmt.Errorf("refusing to serve the peer protocol on non-loopback address %s", addr)
 	}
-	ln, err := net.Listen("tcp", s.addr)
-	if err != nil {
-		return fmt.Errorf("listen: %w", err)
+	srv := &http.Server{
+		Handler:           s.mux,
+		TLSConfig:         s.tlsCfg,
+		ReadHeaderTimeout: 20 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    16 << 10,
+		ErrorLog:          nil,
 	}
-	go func() {
-		if s.tlsCfg != nil {
-			s.httpSrv.ServeTLS(ln, "", "")
-		} else {
-			s.httpSrv.Serve(ln)
-		}
-	}()
-	return nil
-}
+	s.mu.Lock()
+	s.httpSrv = srv
+	s.mu.Unlock()
 
-// Shutdown gracefully drains HTTP connections within the given context's deadline
-// and then stops accepting new connections. Callers should provide a context
-// with an appropriate timeout (30s recommended for graceful drain).
-func (s *Server) Shutdown(ctx context.Context) error {
-	if s.httpSrv == nil {
+	var err error
+	if s.tlsCfg != nil {
+		err = srv.ServeTLS(ln, "", "")
+	} else {
+		err = srv.Serve(ln)
+	}
+	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
-	return s.httpSrv.Shutdown(ctx)
+	return err
+}
+
+// Shutdown gracefully drains HTTP connections within the context's deadline.
+func (s *Server) Shutdown(ctx context.Context) error {
+	s.mu.Lock()
+	srv := s.httpSrv
+	s.mu.Unlock()
+	if srv == nil {
+		return nil
+	}
+	return srv.Shutdown(ctx)
 }
 
 // Stop performs a graceful HTTP shutdown with a 30s drain timeout.
 func (s *Server) Stop() error {
-	if s.httpSrv == nil {
-		return nil
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	return s.httpSrv.Shutdown(ctx)
+	return s.Shutdown(ctx)
 }
 
 func (s *Server) registerRoutes() {
 	s.mux = http.NewServeMux()
-	s.mux.HandleFunc("POST /register", s.mw(s.handleRegister))
-	s.mux.HandleFunc("POST /login", s.mw(s.handleLogin))
-	s.mux.HandleFunc("GET /onion-address", s.mw(s.handleOnionAddress))
-	s.mux.HandleFunc("POST /add-contact", s.mw(s.handleAddContact))
-	s.mux.HandleFunc("POST /receive-contact-request", s.mw(s.handleReceiveContactRequest))
-	s.mux.HandleFunc("POST /send-message", s.mw(s.handleSendMessage))
-	s.mux.HandleFunc("POST /receive-message", s.mw(s.handleReceiveMessage))
-	s.mux.HandleFunc("POST /fetch-messages", s.mw(s.handleFetchMessages))
+	s.mux.HandleFunc("GET "+peer.PathIdentity, s.mw(s.handleIdentity))
+	s.mux.HandleFunc("POST "+peer.PathContactRequest, s.mw(s.handleContactRequest))
+	s.mux.HandleFunc("POST "+peer.PathMessage, s.mw(s.handleMessage))
 }
 
 func (s *Server) mw(next http.HandlerFunc) http.HandlerFunc {
@@ -141,7 +140,7 @@ func (s *Server) loggingMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		next(sw, r)
-		slog.Info("http request",
+		slog.Info("peer request",
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", sw.status,
@@ -155,7 +154,7 @@ func (s *Server) recoveryMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		defer func() {
 			if rec := recover(); rec != nil {
 				slog.Error("panic in handler", "path", r.URL.Path, "panic", rec)
-				http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+				writeError(w, http.StatusInternalServerError, "internal")
 			}
 		}()
 		next(w, r)
@@ -164,260 +163,85 @@ func (s *Server) recoveryMiddleware(next http.HandlerFunc) http.HandlerFunc {
 
 // ── handlers ─────────────────────────────────────────────────────────────────
 
-func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
-		return
-	}
-	if req.Username == "" || req.Password == "" {
-		writeError(w, http.StatusBadRequest, "username and password required")
-		return
-	}
-
-	user, err := s.auth.Register(r.Context(), req.Username, req.Password)
+func (s *Server) handleIdentity(w http.ResponseWriter, r *http.Request) {
+	id, err := s.handler.Identity(r.Context())
 	if err != nil {
-		switch err {
-		case auth.ErrInvalidUsername, auth.ErrWeakPassword:
-			writeError(w, http.StatusBadRequest, err.Error())
-		case auth.ErrDuplicateUser:
-			writeError(w, http.StatusConflict, err.Error())
-		default:
-			writeError(w, http.StatusInternalServerError, "registration failed")
+		writeProtocolError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, id)
+}
+
+func (s *Server) handleContactRequest(w http.ResponseWriter, r *http.Request) {
+	var req peer.ContactRequest
+	if !decodeBody(w, r, peer.MaxRequestBytes, &req) {
+		return
+	}
+	if err := s.handler.HandleContactRequest(r.Context(), &req); err != nil {
+		writeProtocolError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "queued"})
+}
+
+func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
+	var env peer.Envelope
+	if !decodeBody(w, r, peer.MaxEnvelopeBytes, &env) {
+		return
+	}
+	if err := s.handler.HandleMessage(r.Context(), &env); err != nil {
+		writeProtocolError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "received"})
+}
+
+// decodeBody reads a size-limited JSON body. It writes the error response and
+// returns false when the body is too large, not JSON or followed by garbage.
+func decodeBody(w http.ResponseWriter, r *http.Request, limit int64, v any) bool {
+	if ct := r.Header.Get("Content-Type"); ct != "" && !strings.HasPrefix(ct, "application/json") {
+		writeError(w, http.StatusUnsupportedMediaType, "content type must be application/json")
+		return false
+	}
+	body := http.MaxBytesReader(w, r.Body, limit)
+	dec := json.NewDecoder(body)
+	if err := dec.Decode(v); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body too large")
+		} else {
+			writeError(w, http.StatusBadRequest, "invalid JSON")
 		}
-		return
+		return false
 	}
-
-	s.mu.Lock()
-	s.currentUsername = user.Username
-	s.currentPassword = user.RawPassword
-	s.mu.Unlock()
-
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"username":       user.Username,
-		"public_key":     string(user.PublicKey),
-		"onion_address":  user.OnionAddress,
-	})
-}
-
-func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if _, err := dec.Token(); err != io.EOF {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
-		return
+		return false
 	}
-	if req.Username == "" || req.Password == "" {
-		writeError(w, http.StatusBadRequest, "username and password required")
-		return
-	}
-
-	user, err := s.auth.Login(r.Context(), req.Username, req.Password)
-	if err != nil {
-		writeError(w, http.StatusUnauthorized, "invalid username or password")
-		return
-	}
-
-	s.mu.Lock()
-	s.currentUsername = user.Username
-	s.currentPassword = user.RawPassword
-	s.mu.Unlock()
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"username":       user.Username,
-		"public_key":     string(user.PublicKey),
-		"onion_address":  user.OnionAddress,
-	})
+	return true
 }
 
-func (s *Server) handleOnionAddress(w http.ResponseWriter, r *http.Request) {
-	addr := s.tor.GetOnionAddress()
-	writeJSON(w, http.StatusOK, map[string]string{
-		"onion_address": addr,
-	})
-}
-
-func (s *Server) handleAddContact(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Username        string `json:"username"`
-		ContactUsername string `json:"contact_username"`
-		OnionAddress    string `json:"onion_address"`
-		PublicKey       string `json:"public_key"`
+// writeProtocolError maps handler errors to status codes. Details stay in the
+// local log; a peer learns only the category.
+func writeProtocolError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, peer.ErrInvalid), errors.Is(err, peer.ErrInvalidOnion):
+		writeError(w, http.StatusBadRequest, "invalid request")
+	case errors.Is(err, peer.ErrBadSignature):
+		writeError(w, http.StatusUnauthorized, "bad signature")
+	case errors.Is(err, peer.ErrUnknownSender):
+		writeError(w, http.StatusForbidden, "not a contact")
+	case errors.Is(err, peer.ErrWrongRecipient):
+		writeError(w, http.StatusMisdirectedRequest, "wrong recipient")
+	case errors.Is(err, peer.ErrTooMany):
+		writeError(w, http.StatusTooManyRequests, "too many pending requests")
+	case errors.Is(err, peer.ErrNotReady):
+		w.Header().Set("Retry-After", "60")
+		writeError(w, http.StatusServiceUnavailable, "not ready")
+	default:
+		slog.Error("peer request failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal")
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
-		return
-	}
-	if req.Username == "" || req.ContactUsername == "" || req.OnionAddress == "" || req.PublicKey == "" {
-		writeError(w, http.StatusBadRequest, "all fields required: username, contact_username, onion_address, public_key")
-		return
-	}
-
-	contact := domain.Contact{
-		Username:     req.ContactUsername,
-		OnionAddress: req.OnionAddress,
-		PublicKey:    []byte(req.PublicKey),
-	}
-
-	if err := s.contacts.AddContact(r.Context(), req.Username, contact); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-}
-
-func (s *Server) handleReceiveContactRequest(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		FromUsername  string `json:"from_username"`
-		FromOnion     string `json:"from_onion"`
-		FromPublicKey string `json:"from_public_key"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
-		return
-	}
-	if req.FromUsername == "" || req.FromOnion == "" || req.FromPublicKey == "" {
-		writeError(w, http.StatusBadRequest, "all fields required: from_username, from_onion, from_public_key")
-		return
-	}
-
-	if err := s.saveContactRequest(req.FromUsername, req.FromOnion, []byte(req.FromPublicKey)); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to queue contact request")
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]string{"status": "queued"})
-}
-
-func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Sender   string `json:"sender"`
-		Receiver string `json:"receiver"`
-		Password string `json:"password"`
-		Message  string `json:"message"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
-		return
-	}
-	if req.Sender == "" || req.Receiver == "" || req.Password == "" || req.Message == "" {
-		writeError(w, http.StatusBadRequest, "all fields required: sender, receiver, password, message")
-		return
-	}
-
-	if err := s.messages.SendMessage(r.Context(), req.Sender, req.Receiver, req.Password, req.Message); err != nil {
-		switch err {
-		case messages.ErrMessageTooLarge:
-			writeError(w, http.StatusBadRequest, err.Error())
-		default:
-			writeError(w, http.StatusInternalServerError, err.Error())
-		}
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]string{"status": "sent"})
-}
-
-func (s *Server) handleReceiveMessage(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Sender           string `json:"sender"`
-		Receiver         string `json:"receiver"`
-		EncryptedContent string `json:"encrypted_content"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
-		return
-	}
-	if req.Sender == "" || req.Receiver == "" || req.EncryptedContent == "" {
-		writeError(w, http.StatusBadRequest, "all fields required: sender, receiver, encrypted_content")
-		return
-	}
-
-	if err := s.messages.ReceiveMessage(r.Context(), req.Sender, req.Receiver, []byte(req.EncryptedContent)); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
-}
-
-func (s *Server) handleFetchMessages(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Username  string `json:"username"`
-		OtherUser string `json:"other_user"`
-		Password  string `json:"password"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
-		return
-	}
-	if req.Username == "" || req.OtherUser == "" || req.Password == "" {
-		writeError(w, http.StatusBadRequest, "all fields required: username, other_user, password")
-		return
-	}
-
-	msgs, err := s.messages.FetchMessages(r.Context(), req.Username, req.OtherUser, req.Password)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	type msgResponse struct {
-		Sender    string `json:"sender"`
-		Receiver  string `json:"receiver"`
-		Content   string `json:"content"`
-		Timestamp string `json:"timestamp"`
-	}
-
-	out := make([]msgResponse, 0, len(msgs))
-	for _, m := range msgs {
-		out = append(out, msgResponse{
-			Sender:    m.Sender,
-			Receiver:  m.Receiver,
-			Content:   m.Content,
-			Timestamp: m.Timestamp,
-		})
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"messages": out,
-	})
-}
-
-// ── contact request queue ────────────────────────────────────────────────────
-
-func (s *Server) initContactRequestsTable() {
-	_, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS contact_requests (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		from_username TEXT NOT NULL,
-		from_onion TEXT NOT NULL,
-		from_public_key BLOB NOT NULL,
-		status TEXT NOT NULL DEFAULT 'pending',
-		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-	)`)
-	if err != nil {
-		slog.Error("failed to create contact_requests table", "error", err)
-	}
-}
-
-func (s *Server) saveContactRequest(fromUsername, fromOnion string, fromPublicKey []byte) error {
-	stmt, err := s.db.Prepare(`INSERT INTO contact_requests (from_username, from_onion, from_public_key) VALUES (?, ?, ?)`)
-	if err != nil {
-		return fmt.Errorf("prepare: %w", err)
-	}
-	defer stmt.Close()
-
-	_, err = stmt.Exec(fromUsername, fromOnion, fromPublicKey)
-	if err != nil {
-		return fmt.Errorf("insert: %w", err)
-	}
-	return nil
 }
 
 // ── JSON helpers ─────────────────────────────────────────────────────────────

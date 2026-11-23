@@ -2,160 +2,59 @@ package tui
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
-	"crypto/sha256"
 	"database/sql"
 	"errors"
-	"fmt"
-	"io"
+	"sync"
 	"testing"
 
-	"github.com/ProtonMail/gopenpgp/v2/crypto"
+	"charm.land/bubbletea/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/bcrypt"
 
-	"charm.land/bubbletea/v2"
-
+	"sote/internal/crypto"
 	"sote/internal/messages"
 	"sote/internal/storage"
 )
 
+// mockCrypto is the real crypto service with two shortcuts for speed: key
+// pairs are generated once per username for the whole package, and password
+// hashing uses bcrypt's minimum cost. Everything else (AES layout, unlocking,
+// signatures) is the production code, which message sending now needs.
 type mockCrypto struct {
-	keyPairs map[string]struct{ priv, pub []byte }
+	*crypto.Service
 }
 
-func newMockCrypto() *mockCrypto {
-	return &mockCrypto{keyPairs: make(map[string]struct{ priv, pub []byte })}
-}
+var keyCache sync.Map // username -> [2][]byte{priv, pub}
+
+func newMockCrypto() *mockCrypto { return &mockCrypto{Service: crypto.New()} }
 
 func (m *mockCrypto) generateAndStore(username string) ([]byte, []byte, error) {
-	keyRing, err := crypto.GenerateKey(username, "", "rsa", 2048)
+	if v, ok := keyCache.Load(username); ok {
+		kp := v.([2][]byte)
+		return kp[0], kp[1], nil
+	}
+	priv, pub, err := crypto.GenerateKeyPairFor("sote", username+"@sote.local")
 	if err != nil {
 		return nil, nil, err
 	}
-	priv, err := keyRing.Armor()
-	if err != nil {
-		return nil, nil, err
-	}
-	pub, err := keyRing.GetArmoredPublicKey()
-	if err != nil {
-		return nil, nil, err
-	}
-	m.keyPairs[username] = struct{ priv, pub []byte }{[]byte(priv), []byte(pub)}
-	return []byte(priv), []byte(pub), nil
+	keyCache.Store(username, [2][]byte{priv, pub})
+	return priv, pub, nil
 }
 
 func (m *mockCrypto) HashPassword(password string) (string, error) {
-	data := []byte(password)
-	for i := 0; i < 21; i++ {
-		h := sha256.Sum256(data)
-		data = h[:]
-	}
-	return fmt.Sprintf("%x", data), nil
+	h, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.MinCost)
+	return string(h), err
 }
 
-func (m *mockCrypto) VerifyPassword(hash, password string) error {
-	computed, err := m.HashPassword(password)
-	if err != nil {
-		return err
-	}
-	if hash != computed {
-		return errors.New("password mismatch")
-	}
-	return nil
-}
+// testOnion is the local onion address used by message services in tests.
+const testOnion = "aliceaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion"
 
-func (m *mockCrypto) GenerateKeyPair() ([]byte, []byte, error) {
-	keyRing, err := crypto.GenerateKey("test", "", "rsa", 2048)
-	if err != nil {
-		return nil, nil, err
-	}
-	priv, err := keyRing.Armor()
-	if err != nil {
-		return nil, nil, err
-	}
-	pub, err := keyRing.GetArmoredPublicKey()
-	if err != nil {
-		return nil, nil, err
-	}
-	return []byte(priv), []byte(pub), nil
-}
-
-func (m *mockCrypto) EncryptAES(data []byte, passphrase string) ([]byte, error) {
-	key := sha256.Sum256([]byte(passphrase))
-	block, err := aes.NewCipher(key[:])
-	if err != nil {
-		return nil, err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err = io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, err
-	}
-	return gcm.Seal(nonce, nonce, data, nil), nil
-}
-
-func (m *mockCrypto) DecryptAES(data []byte, passphrase string) ([]byte, error) {
-	key := sha256.Sum256([]byte(passphrase))
-	block, err := aes.NewCipher(key[:])
-	if err != nil {
-		return nil, err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-	nonceSize := gcm.NonceSize()
-	if len(data) < nonceSize {
-		return nil, fmt.Errorf("ciphertext too short")
-	}
-	return gcm.Open(nil, data[:nonceSize], data[nonceSize:], nil)
-}
-
-func (m *mockCrypto) EncryptMessage(plaintext, publicKey []byte) ([]byte, error) {
-	key, err := crypto.NewKeyFromArmored(string(publicKey))
-	if err != nil {
-		return nil, err
-	}
-	keyRing, err := crypto.NewKeyRing(key)
-	if err != nil {
-		return nil, err
-	}
-	enc, err := keyRing.Encrypt(crypto.NewPlainMessage(plaintext), nil)
-	if err != nil {
-		return nil, err
-	}
-	armored, _ := enc.GetArmored()
-	return []byte(armored), nil
-}
-
-func (m *mockCrypto) DecryptMessage(ciphertext, privateKey []byte, passphrase string) (string, error) {
-	decryptedKey, err := m.DecryptAES(privateKey, passphrase)
-	if err != nil {
-		return "", fmt.Errorf("decrypt private key: %w", err)
-	}
-	key, err := crypto.NewKeyFromArmored(string(decryptedKey))
-	if err != nil {
-		return "", err
-	}
-	keyRing, err := crypto.NewKeyRing(key)
-	if err != nil {
-		return "", err
-	}
-	msg, err := crypto.NewPGPMessageFromArmored(string(ciphertext))
-	if err != nil {
-		return "", err
-	}
-	dec, err := keyRing.Decrypt(msg, nil, 0)
-	if err != nil {
-		return "", err
-	}
-	return string(dec.GetBinary()), nil
+// newSvc returns a message service that can send (it knows a local onion).
+func newSvc(db *sql.DB, mc *mockCrypto) *messages.Service {
+	svc := messages.NewService(db, mc)
+	svc.SetLocalOnion(func() string { return testOnion })
+	return svc
 }
 
 func setupTestDB(t *testing.T) *sql.DB {
@@ -197,6 +96,7 @@ func setupChatModel(t *testing.T) (*ChatModel, *sql.DB, *mockCrypto) {
 	seedContact(t, db, "alice", "carol", "carol.onion", carolPub)
 
 	m := NewChatModel(db, mc, "alice", "alicepass")
+	m.SetService(newSvc(db, mc))
 	m.SetSize(100, 30)
 	_ = m.Focus()
 	return m, db, mc
@@ -228,7 +128,7 @@ func TestSendMessage(t *testing.T) {
 
 	assert.Empty(t, m.TextareaValue())
 
-	svc := messages.NewService(db, mc)
+	svc := newSvc(db, mc)
 	msgs, err := svc.FetchMessages(context.Background(), "alice", "bob", "alicepass")
 	require.NoError(t, err)
 	found := false
@@ -245,7 +145,7 @@ func TestSendMessage(t *testing.T) {
 func TestReceiveMessage(t *testing.T) {
 	m, db, mc := setupChatModel(t)
 
-	svc := messages.NewService(db, mc)
+	svc := newSvc(db, mc)
 	sendAndDeliver(t, svc, "alice", "bob", "alicepass", "Hey from Bob")
 	sendAndDeliver(t, svc, "alice", "bob", "alicepass", "How are you?")
 
@@ -291,7 +191,7 @@ func TestSwitchContact(t *testing.T) {
 func TestSwitchContactClearsMessages(t *testing.T) {
 	m, db, mc := setupChatModel(t)
 
-	svc := messages.NewService(db, mc)
+	svc := newSvc(db, mc)
 	sendAndDeliver(t, svc, "alice", "bob", "alicepass", "msg with bob")
 	msgs, _ := svc.FetchMessages(context.Background(), "alice", "bob", "alicepass")
 	m.Update(msgsLoadedMsg{messages: msgs})
@@ -306,7 +206,7 @@ func TestSwitchContactClearsMessages(t *testing.T) {
 func TestAutoScroll(t *testing.T) {
 	m, db, mc := setupChatModel(t)
 
-	svc := messages.NewService(db, mc)
+	svc := newSvc(db, mc)
 	sendAndDeliver(t, svc, "alice", "bob", "alicepass", "msg 1")
 	sendAndDeliver(t, svc, "alice", "bob", "alicepass", "msg 2")
 	sendAndDeliver(t, svc, "alice", "bob", "alicepass", "msg 3")
@@ -321,7 +221,7 @@ func TestAutoScroll(t *testing.T) {
 func TestOwnMessageDecryption(t *testing.T) {
 	m, db, mc := setupChatModel(t)
 
-	svc := messages.NewService(db, mc)
+	svc := newSvc(db, mc)
 	sendAndDeliver(t, svc, "alice", "bob", "alicepass", "secret from me")
 
 	msgs, err := svc.FetchMessages(context.Background(), "alice", "bob", "alicepass")
@@ -341,24 +241,22 @@ func TestOwnMessageDecryption(t *testing.T) {
 func TestReceivedMessageDecryption(t *testing.T) {
 	m, db, mc := setupChatModel(t)
 
-	svc := messages.NewService(db, mc)
-	err := svc.SendMessage(context.Background(), "alice", "bob", "alicepass", "GPG secret")
+	// What the node stores for a verified envelope from bob: the PGP message
+	// encrypted to alice and signed by bob.
+	bobPriv, _, err := mc.generateAndStore("bob")
+	require.NoError(t, err)
+	bob, err := crypto.IdentityFromArmoredPrivateKey(bobPriv)
+	require.NoError(t, err)
+	defer bob.Close()
+	_, alicePub, err := mc.generateAndStore("alice")
+	require.NoError(t, err)
+	payload, err := bob.EncryptFor(alicePub, []byte("GPG secret"))
+	require.NoError(t, err)
+	_, err = storage.SaveMessageMeta(context.Background(), db, "bob", "alice",
+		append([]byte{storage.BlobReceived}, payload...), "", "")
 	require.NoError(t, err)
 
-	rows, err := storage.GetMessages(db, "alice", "bob")
-	require.NoError(t, err)
-	var gpgPayload []byte
-	for _, row := range rows {
-		if len(row.Message) > 1 && row.Message[0] == 0x01 {
-			gpgPayload = row.Message[1:]
-			break
-		}
-	}
-	require.NotNil(t, gpgPayload)
-
-	err = svc.ReceiveMessage(context.Background(), "alice", "bob", gpgPayload)
-	require.NoError(t, err)
-
+	svc := newSvc(db, mc)
 	msgs, err := svc.FetchMessages(context.Background(), "alice", "bob", "alicepass")
 	require.NoError(t, err)
 	m.Update(msgsLoadedMsg{messages: msgs})
@@ -367,10 +265,28 @@ func TestReceivedMessageDecryption(t *testing.T) {
 	for _, dm := range m.Messages() {
 		if dm.Content == "GPG secret" {
 			found = true
+			assert.True(t, dm.Verified, "signed by the stored contact key")
 			break
 		}
 	}
 	assert.True(t, found, "GPG-encrypted received message should be decrypted")
+}
+
+func TestFormatMessageShowsDeliveryAndUnverified(t *testing.T) {
+	m, _, _ := setupChatModel(t)
+	assert.Contains(t, m.formatMessage(messages.DecryptedMessage{Sender: "alice", Content: "x", Delivery: storage.DeliveryPending}), "…")
+	assert.Contains(t, m.formatMessage(messages.DecryptedMessage{Sender: "alice", Content: "x", Delivery: storage.DeliveryDelivered}), "✓")
+	assert.Contains(t, m.formatMessage(messages.DecryptedMessage{Sender: "alice", Content: "x", Delivery: storage.DeliveryRejected}), "not accepted")
+	assert.Contains(t, m.formatMessage(messages.DecryptedMessage{Sender: "bob", Content: "x", Verified: false}), "⚠")
+	assert.NotContains(t, m.formatMessage(messages.DecryptedMessage{Sender: "bob", Content: "x", Verified: true}), "⚠")
+}
+
+func TestFocusClearsPreviousEscape(t *testing.T) {
+	m, _, _ := setupChatModel(t)
+	m.Update(keyMsg(tea.KeyEsc, "esc"))
+	require.True(t, m.Quitting())
+	_ = m.Focus()
+	assert.False(t, m.Quitting(), "re-entering the chat must not bounce straight back to the menu")
 }
 
 func TestQuitOnEscape(t *testing.T) {

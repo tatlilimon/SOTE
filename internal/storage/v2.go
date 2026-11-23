@@ -60,9 +60,9 @@ const (
 const MaxPendingRequests = 200
 
 var (
-	ErrTooManyRequests    = errors.New("too many pending contact requests")
-	ErrRequestNotFound    = errors.New("contact request not found")
-	ErrContactNotFound    = errors.New("contact not found")
+	ErrTooManyRequests = errors.New("too many pending contact requests")
+	ErrRequestNotFound = errors.New("contact request not found")
+	ErrContactNotFound = errors.New("contact not found")
 )
 
 // ContactRequest is a request received from a peer.

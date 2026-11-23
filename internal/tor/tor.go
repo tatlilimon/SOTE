@@ -1,21 +1,27 @@
 // Package tor manages Tor hidden service setup, lifecycle, and connectivity
-// using the cretz/bine Go library. It provides dynamic SOCKS port allocation
-// and automatic hidden service creation.
+// using the cretz/bine Go library. It provides dynamic SOCKS port allocation,
+// a persistent v3 onion service and optional bridges.
 package tor
 
 import (
 	"context"
+	"crypto/ed25519"
 	"fmt"
 	"net"
 	"os/exec"
 	"sync"
 
 	btor "github.com/cretz/bine/tor"
+	"github.com/cretz/bine/torutil"
+	torEd "github.com/cretz/bine/torutil/ed25519"
 )
 
+// RemotePort is the virtual port peers connect to on the onion address.
+const RemotePort = 443
+
 // TorService implements domain.TorService using cretz/bine for Tor lifecycle:
-// starting/stopping a Tor process, creating a v3 hidden service, and
-// providing the .onion address.
+// starting/stopping a Tor process, publishing a v3 onion service, and
+// providing the .onion address and a SOCKS dialer.
 type TorService struct {
 	mu        sync.Mutex
 	tor       *btor.Tor
@@ -25,6 +31,15 @@ type TorService struct {
 	dataDir    string
 	listenPort int
 	socksPort  int
+
+	// onionKey keeps the onion address stable across restarts. Without it Tor
+	// generates a new address on every start and contacts lose the user.
+	onionKey ed25519.PrivateKey
+	listener net.Listener
+
+	useBridges bool
+	bridges    []string
+	plugins    []string
 }
 
 // New creates a TorService with the given configuration. The Tor process is
@@ -38,9 +53,63 @@ func New(dataDir string, listenPort, socksPort int) *TorService {
 	}
 }
 
-// Start launches a Tor process via bine, creates a v3 hidden service that
-// forwards to listenPort, and waits for the onion address. The context is
-// used for both process startup and waiting for the hidden service to be
+// SetOnionKey sets the onion service key. Call before Start.
+func (s *TorService) SetOnionKey(key ed25519.PrivateKey) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onionKey = key
+}
+
+// SetListener sets the local listener the onion service forwards to. Call
+// before Start. Without one, a listener on 127.0.0.1:listenPort is created.
+func (s *TorService) SetListener(ln net.Listener) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.listener = ln
+}
+
+// SetBridges configures bridges (validated by the config package). Call
+// before Start; a running Tor keeps its settings until restarted.
+func (s *TorService) SetBridges(use bool, bridges, plugins []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.useBridges = use
+	s.bridges = append([]string(nil), bridges...)
+	s.plugins = append([]string(nil), plugins...)
+}
+
+// UsingBridges reports whether Start will use bridges.
+func (s *TorService) UsingBridges() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.useBridges && len(s.bridges) > 0
+}
+
+// OnionAddressForKey returns the v3 onion address of an onion service key.
+func OnionAddressForKey(key ed25519.PrivateKey) string {
+	pub := key.Public().(ed25519.PublicKey)
+	return torutil.OnionServiceIDFromV3PublicKey(torEd.PublicKey(pub)) + ".onion"
+}
+
+// torArgs builds the command-line options for the Tor process. Bridge and
+// plugin lines are passed as separate arguments (never through a torrc
+// file), so a line cannot inject other options.
+func torArgs(socksPort int, useBridges bool, bridges, plugins []string) []string {
+	args := []string{"--SocksPort", fmt.Sprintf("127.0.0.1:%d", socksPort)}
+	if useBridges && len(bridges) > 0 {
+		args = append(args, "--UseBridges", "1")
+		for _, p := range plugins {
+			args = append(args, "--ClientTransportPlugin", p)
+		}
+		for _, b := range bridges {
+			args = append(args, "--Bridge", b)
+		}
+	}
+	return args
+}
+
+// Start launches a Tor process via bine, publishes the v3 onion service that
+// forwards RemotePort to the local listener, and waits for it to be
 // published. Returns an error if the tor binary is not found in PATH.
 func (s *TorService) Start(ctx context.Context) error {
 	s.mu.Lock()
@@ -51,7 +120,7 @@ func (s *TorService) Start(ctx context.Context) error {
 	}
 
 	if _, err := exec.LookPath("tor"); err != nil {
-		return fmt.Errorf("Tor not found. Install: apt install tor")
+		return fmt.Errorf("Tor not found. Install it with your package manager (e.g. dnf install tor, apt install tor)")
 	}
 
 	socksPort, err := findAvailablePort(s.socksPort, 100)
@@ -62,21 +131,25 @@ func (s *TorService) Start(ctx context.Context) error {
 
 	t, err := btor.Start(ctx, &btor.StartConf{
 		NoAutoSocksPort: true,
-		ExtraArgs: []string{
-			"--SocksPort", fmt.Sprintf("127.0.0.1:%d", socksPort),
-		},
-		DataDir: s.dataDir,
+		ExtraArgs:       torArgs(socksPort, s.useBridges, s.bridges, s.plugins),
+		DataDir:         s.dataDir,
 	})
 	if err != nil {
 		return fmt.Errorf("start tor: %w", err)
 	}
 	t.StopProcessOnClose = true
 
-	onion, err := t.Listen(ctx, &btor.ListenConf{
-		RemotePorts: []int{s.listenPort},
-		Version3:    true,
-		NoWait:      false,
-	})
+	conf := &btor.ListenConf{
+		LocalListener: s.listener,
+		LocalPort:     s.listenPort,
+		RemotePorts:   []int{RemotePort},
+		Version3:      true,
+		NoWait:        false,
+	}
+	if s.onionKey != nil {
+		conf.Key = s.onionKey
+	}
+	onion, err := t.Listen(ctx, conf)
 	if err != nil {
 		t.Close()
 		return fmt.Errorf("create hidden service: %w", err)
@@ -85,8 +158,25 @@ func (s *TorService) Start(ctx context.Context) error {
 	s.tor = t
 	s.onionSvc = onion
 	s.onionAddr = onion.ID + ".onion"
+	if s.listener == nil {
+		s.listener = onion.LocalListener
+	}
 
 	return nil
+}
+
+// LocalListener returns the listener the onion service forwards to.
+func (s *TorService) LocalListener() net.Listener {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.listener
+}
+
+// SocksPort returns the SOCKS port Tor listens on (after Start).
+func (s *TorService) SocksPort() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.socksPort
 }
 
 // Stop gracefully tears down the hidden service and Tor process. Safe to

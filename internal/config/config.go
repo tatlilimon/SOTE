@@ -16,6 +16,12 @@ type Config struct {
 	TorControlPort int    `yaml:"tor_control_port"`
 	LogLevel       string `yaml:"log_level"`
 	LogFormat      string `yaml:"log_format"`
+
+	// UseBridges makes Tor connect through the bridges below (for networks
+	// that block Tor). See bridges.go for the line syntax.
+	UseBridges             bool     `yaml:"use_bridges"`
+	Bridges                []string `yaml:"bridges,omitempty"`
+	ClientTransportPlugins []string `yaml:"client_transport_plugins,omitempty"`
 }
 
 var validLogLevels = map[string]bool{
@@ -66,23 +72,7 @@ func LoadConfig(path string) (*Config, error) {
 }
 
 func SaveDefaultConfig(path string) error {
-	cfg := DefaultConfig()
-
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("create config dir %s: %w", dir, err)
-	}
-
-	data, err := yaml.Marshal(cfg)
-	if err != nil {
-		return fmt.Errorf("marshal default config: %w", err)
-	}
-
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		return fmt.Errorf("write config %s: %w", path, err)
-	}
-
-	return nil
+	return SaveConfig(path, DefaultConfig())
 }
 
 func applyEnvOverrides(cfg *Config) {
@@ -110,6 +100,11 @@ func applyEnvOverrides(cfg *Config) {
 	if v, ok := os.LookupEnv("SOTE_LOG_FORMAT"); ok {
 		cfg.LogFormat = v
 	}
+	if v, ok := os.LookupEnv("SOTE_USE_BRIDGES"); ok {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.UseBridges = b
+		}
+	}
 }
 
 func validateConfig(cfg *Config) error {
@@ -129,6 +124,10 @@ func validateConfig(cfg *Config) error {
 
 	if !validLogFormats[cfg.LogFormat] {
 		return fmt.Errorf("invalid log_format: %q (must be text or json)", cfg.LogFormat)
+	}
+
+	if err := ValidateBridges(cfg.UseBridges, cfg.Bridges, cfg.ClientTransportPlugins); err != nil {
+		return err
 	}
 
 	return nil

@@ -43,6 +43,9 @@ type ChatView struct {
 	msgSvc *messages.Service
 
 	mu sync.Mutex
+	// loads tracks background message loads (tests wait for them; fyne's
+	// test driver runs fyne.Do callbacks on the calling goroutine).
+	loads sync.WaitGroup
 
 	// OnIncomingMessage is called when messages from a different user arrive.
 	// The sender parameter is the username of the person who sent the message.
@@ -60,9 +63,9 @@ func NewChatView(msgSvc *messages.Service, username, password string, contacts [
 	cv.buildUI()
 
 	if len(contacts) > 0 {
-		cv.selectedContact = contacts[0].ContactUsername
-		cv.contactSelect.SetSelected(cv.selectedContact)
-		cv.loadMessages()
+		// SetSelected fires the select's OnChanged, which loads the
+		// conversation; loading again here started two concurrent loads.
+		cv.contactSelect.SetSelected(contacts[0].ContactUsername)
 	}
 
 	return cv
@@ -104,6 +107,9 @@ func (cv *ChatView) buildUI() {
 
 func (cv *ChatView) Container() *fyne.Container { return cv.container }
 
+// waitLoads blocks until background message loads have finished.
+func (cv *ChatView) waitLoads() { cv.loads.Wait() }
+
 func (cv *ChatView) SelectedContact() string { return cv.selectedContact }
 
 func (cv *ChatView) Messages() []messages.DecryptedMessage { return cv.displayMsgs }
@@ -121,9 +127,7 @@ func (cv *ChatView) SetContacts(contacts []storage.Contact) {
 		cv.selectedContact = ""
 		cv.contactSelect.ClearSelected()
 	} else if cv.selectedContact == "" {
-		cv.selectedContact = contacts[0].ContactUsername
-		cv.contactSelect.SetSelected(cv.selectedContact)
-		cv.loadMessages()
+		cv.contactSelect.SetSelected(contacts[0].ContactUsername)
 	}
 	cv.updateSendState()
 }
@@ -158,7 +162,9 @@ func (cv *ChatView) loadMessages() {
 	user, contact, password := cv.username, cv.selectedContact, cv.password
 	svc := cv.msgSvc
 
+	cv.loads.Add(1)
 	go func() {
+		defer cv.loads.Done()
 		msgs, err := svc.FetchMessages(context.Background(), user, contact, password)
 		fyne.Do(func() {
 			cv.mu.Lock()

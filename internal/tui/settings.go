@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -46,7 +47,48 @@ type SettingsModel struct {
 
 	passwordChanger PasswordChanger
 	focused         bool
+
+	// pendingNew holds the new password between submit and success, so the
+	// session can be updated (it used to be set from the already-cleared
+	// field, leaving the session with an empty password).
+	pendingNew string
+
+	onion string
+
+	// Bridges editor.
+	showBridges   bool
+	bridgesUse    bool
+	bridgesCount  int
+	bridgesArea   textarea.Model
+	bridgeSaver   func(use bool, text string) error
+	bridgesNotice string
 }
+
+// BridgesSavedMsg reports the result of saving bridge settings.
+type BridgesSavedMsg struct {
+	Use   bool
+	Count int
+	Error error
+}
+
+// SetOnion sets the onion address shown when the user record has none yet.
+func (m *SettingsModel) SetOnion(addr string) { m.onion = addr }
+
+// SetBridges sets the current bridge configuration and how to save changes.
+func (m *SettingsModel) SetBridges(use bool, text string, count int, saver func(use bool, text string) error) {
+	m.bridgesUse, m.bridgesCount, m.bridgeSaver = use, count, saver
+	ta := textarea.New()
+	ta.Placeholder = "obfs4 192.0.2.10:443 FINGERPRINT cert=... iat-mode=0\nClientTransportPlugin obfs4 exec /usr/bin/lyrebird"
+	ta.ShowLineNumbers = false
+	ta.CharLimit = 16 * 1024
+	ta.SetWidth(70)
+	ta.SetHeight(6)
+	ta.SetValue(text)
+	m.bridgesArea = ta
+}
+
+// ShowsForm reports whether a form or editor is open and takes the keys.
+func (m SettingsModel) ShowsForm() bool { return m.showPasswordForm || m.showBridges }
 
 func NewSettingsModel(user *domain.User, changer PasswordChanger) SettingsModel {
 	currentInput := textinput.New()
@@ -113,6 +155,16 @@ func (m SettingsModel) Update(msg tea.Msg) (SettingsModel, tea.Cmd) {
 		return m.handleKey(msg)
 	case PasswordChangedMsg:
 		return m.handlePasswordChanged(msg)
+	case BridgesSavedMsg:
+		if msg.Error != nil {
+			m.bridgesNotice = "✗ " + msg.Error.Error()
+			return m, nil
+		}
+		m.bridgesCount = msg.Count
+		m.showBridges = false
+		m.bridgesArea.Blur()
+		m.bridgesNotice = "✓ Saved. Restart SOTE to connect with the new bridge settings."
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -137,6 +189,37 @@ func (m SettingsModel) Update(msg tea.Msg) (SettingsModel, tea.Cmd) {
 }
 
 func (m SettingsModel) handleKey(msg tea.KeyMsg) (SettingsModel, tea.Cmd) {
+	if m.showBridges {
+		switch msg.String() {
+		case "esc":
+			m.showBridges = false
+			m.bridgesArea.Blur()
+			m.bridgesNotice = ""
+			return m, nil
+		case "ctrl+t":
+			m.bridgesUse = !m.bridgesUse
+			return m, nil
+		case "ctrl+s":
+			if m.bridgeSaver == nil {
+				return m, nil
+			}
+			saver, use, text := m.bridgeSaver, m.bridgesUse, m.bridgesArea.Value()
+			return m, func() tea.Msg {
+				err := saver(use, text)
+				count := 0
+				for _, l := range strings.Split(text, "\n") {
+					if t := strings.TrimSpace(l); t != "" && !strings.HasPrefix(t, "#") && !strings.HasPrefix(strings.ToLower(t), "clienttransportplugin") {
+						count++
+					}
+				}
+				return BridgesSavedMsg{Use: use, Count: count, Error: err}
+			}
+		}
+		var cmd tea.Cmd
+		m.bridgesArea, cmd = m.bridgesArea.Update(msg)
+		return m, cmd
+	}
+
 	if m.showPasswordForm {
 		switch msg.String() {
 		case "tab":
@@ -151,8 +234,14 @@ func (m SettingsModel) handleKey(msg tea.KeyMsg) (SettingsModel, tea.Cmd) {
 	}
 
 	switch msg.String() {
-	case "ctrl+c", "q":
-		return m, tea.Quit
+	case "enter", "p":
+		return m, m.OpenPasswordForm()
+	case "b":
+		if m.bridgeSaver != nil {
+			m.showBridges = true
+			m.bridgesNotice = ""
+			return m, m.bridgesArea.Focus()
+		}
 	}
 
 	return m, nil
@@ -225,6 +314,7 @@ func (m SettingsModel) submitPasswordChange() (SettingsModel, tea.Cmd) {
 	}
 
 	m.submitting = true
+	m.pendingNew = newPass
 	return m, m.doChangePassword(current, newPass)
 }
 
@@ -240,19 +330,20 @@ func (m SettingsModel) handlePasswordChanged(msg PasswordChangedMsg) (SettingsMo
 
 	if msg.Error != nil {
 		m.errorMsg = msg.Error.Error()
+		m.pendingNew = ""
 		return m, nil
 	}
 
 	m.successMsg = "Password changed successfully."
+	if m.user != nil && m.pendingNew != "" {
+		m.user.RawPassword = m.pendingNew
+	}
+	m.pendingNew = ""
 	m.currentInput.SetValue("")
 	m.newInput.SetValue("")
 	m.confirmInput.SetValue("")
 	m.errorMsg = ""
 	m.showPasswordForm = false
-
-	if m.user != nil {
-		m.user.RawPassword = m.newInput.Value()
-	}
 
 	return m, nil
 }
@@ -267,6 +358,9 @@ func (m SettingsModel) View() string {
 	sections = append(sections, m.renderUserInfo())
 	sections = append(sections, m.renderPasswordSection())
 	sections = append(sections, m.renderConnectionInfo())
+	if m.bridgeSaver != nil {
+		sections = append(sections, m.renderBridges())
+	}
 	sections = append(sections, m.renderAbout())
 
 	return lipgloss.JoinVertical(lipgloss.Left, sections...)
@@ -285,6 +379,9 @@ func (m SettingsModel) renderUserInfo() string {
 		if m.user.OnionAddress != "" {
 			onion = m.user.OnionAddress
 		}
+	}
+	if onion == "Not available" && m.onion != "" {
+		onion = m.onion
 	}
 
 	lines := []string{
@@ -348,6 +445,8 @@ func (m SettingsModel) renderConnectionInfo() string {
 	onion := "Not available"
 	if m.user != nil && m.user.OnionAddress != "" {
 		onion = m.user.OnionAddress
+	} else if m.onion != "" {
+		onion = m.onion
 	}
 
 	uptime := m.uptime
@@ -381,6 +480,27 @@ func (m SettingsModel) renderAbout() string {
 	return CardStyle.Width(m.width - 4).Render(
 		lipgloss.JoinVertical(lipgloss.Left, lines...),
 	)
+}
+
+func (m SettingsModel) renderBridges() string {
+	state := "off"
+	if m.bridgesUse {
+		state = fmt.Sprintf("on (%d configured)", m.bridgesCount)
+	}
+	lines := []string{SectionTitleStyle.Render("Tor Bridges"), renderInfoRow("Bridges:", state)}
+	if m.showBridges {
+		lines = append(lines,
+			MutedStyle.Render("One bridge per line (from bridges.torproject.org); a ClientTransportPlugin line for obfs4/snowflake/webtunnel."),
+			m.bridgesArea.View(),
+			HelpStyle.Render(fmt.Sprintf("Use bridges: %v (ctrl+t toggles) • ctrl+s: save • esc: cancel", m.bridgesUse)),
+		)
+	} else {
+		lines = append(lines, HelpStyle.Render("b: edit bridges"))
+	}
+	if m.bridgesNotice != "" {
+		lines = append(lines, MutedStyle.Render(m.bridgesNotice))
+	}
+	return CardStyle.Width(m.width - 4).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
 }
 
 func renderInfoRow(label, value string) string {

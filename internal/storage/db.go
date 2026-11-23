@@ -12,9 +12,9 @@ import (
 
 // Known error for duplicate or self-add contacts.
 var (
-	ErrContactExists      = errors.New("contact already exists")
-	ErrSelfAdd            = errors.New("cannot add yourself as a contact")
-	ErrMigrationFailed    = errors.New("migration failed")
+	ErrContactExists   = errors.New("contact already exists")
+	ErrSelfAdd         = errors.New("cannot add yourself as a contact")
+	ErrMigrationFailed = errors.New("migration failed")
 )
 
 // User represents a row in the user table.
@@ -351,5 +351,3 @@ func GetContactByUsername(db *sql.DB, contactUsername string) (*Contact, error) 
 func DSN(dbPath string) string {
 	return buildDSN(dbPath)
 }
-
-

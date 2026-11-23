@@ -1,9 +1,12 @@
 package transport
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -160,7 +163,7 @@ func (c *Client) tlsConfig() *tls.Config {
 	}
 	if c.expectedFingerprint != "" {
 		return &tls.Config{
-			MinVersion:         tls.VersionTLS12,
+			MinVersion: tls.VersionTLS12,
 			// InsecureSkipVerify is required for Tor .onion fingerprint verification.
 			// Go TLS calls VerifyConnection AFTER chain verification — self-signed
 			// Tor certs fail chain verification before VerifyConnection runs.
@@ -181,11 +184,57 @@ func (c *Client) tlsConfig() *tls.Config {
 			},
 		}
 	}
-	return &tls.Config{MinVersion: tls.VersionTLS13}
+	// No pinned fingerprint: this client talks only to .onion addresses
+	// (enforced by checkHost) through Tor. A v3 onion address is the hash of
+	// the service's key and Tor completes the circuit only to the holder of
+	// that key, so the endpoint is already authenticated and the link
+	// encrypted end to end; the peer's TLS certificate is self-signed and
+	// there is no CA to check it against. TLS here is defense in depth.
+	return &tls.Config{
+		MinVersion:         tls.VersionTLS13,
+		InsecureSkipVerify: true, //nolint:gosec // onion address authenticates the peer; see checkHost
+	}
 }
 
+// ErrNotOnion is returned for a peer address that is not an onion address
+// when no certificate fingerprint is pinned.
+var ErrNotOnion = errors.New("peers are reached only at .onion addresses through Tor")
+
+// checkHost refuses hosts that would make skipping certificate verification
+// unsafe: without a pinned fingerprint only .onion addresses are allowed.
+func (c *Client) checkHost(addr string) error {
+	host := addr
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		host = h
+	}
+	if strings.HasSuffix(host, ".onion") || c.expectedFingerprint != "" {
+		return nil
+	}
+	return fmt.Errorf("refusing to connect to %q: %w", host, ErrNotOnion)
+}
+
+// maxResponseBytes bounds how much of a peer's response is read.
+const maxResponseBytes = 1 << 20
+
 func (c *Client) SendPost(ctx context.Context, onionAddr, path string, body io.Reader) (*http.Response, error) {
-	url := fmt.Sprintf("https://%s%s", onionAddr, path)
+	var payload []byte
+	if body != nil {
+		var err error
+		if payload, err = io.ReadAll(body); err != nil {
+			return nil, fmt.Errorf("read request body: %w", err)
+		}
+	}
+	return c.do(ctx, http.MethodPost, onionAddr, path, payload)
+}
+
+// do sends a request, retrying network failures with backoff. The body is
+// buffered so every attempt sends it in full (retries used to send an
+// already-consumed reader, i.e. an empty body).
+func (c *Client) do(ctx context.Context, method, addr, path string, payload []byte) (*http.Response, error) {
+	if err := c.checkHost(addr); err != nil {
+		return nil, err
+	}
+	url := fmt.Sprintf("https://%s%s", addr, path)
 
 	var lastErr error
 	for attempt := 0; attempt < c.maxAttempts; attempt++ {
@@ -197,19 +246,27 @@ func (c *Client) SendPost(ctx context.Context, onionAddr, path string, body io.R
 			}
 		}
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
+		var reqBody io.Reader
+		if payload != nil {
+			reqBody = bytes.NewReader(payload)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, url, reqBody)
 		if err != nil {
 			return nil, fmt.Errorf("create request: %w", err)
 		}
-		req.Header.Set("Content-Type", "application/json")
+		if payload != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
 
 		hc := &http.Client{
 			Transport: c.transport,
 			Timeout:   c.timeout,
+			// Peers never need redirects; following one could leave Tor.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		}
 		resp, err := hc.Do(req)
 		if err != nil {
-			lastErr = &ErrNetwork{Op: "post", Err: err}
+			lastErr = &ErrNetwork{Op: strings.ToLower(method), Err: err}
 			if !isNetworkError(err) || attempt == c.maxAttempts-1 {
 				return nil, lastErr
 			}
@@ -221,6 +278,61 @@ func (c *Client) SendPost(ctx context.Context, onionAddr, path string, body io.R
 	}
 
 	return nil, lastErr
+}
+
+// StatusError is a non-2xx answer from a peer.
+type StatusError struct {
+	Code int
+	Body string
+}
+
+func (e *StatusError) Error() string { return fmt.Sprintf("peer answered %d: %s", e.Code, e.Body) }
+
+// PostJSON sends v as JSON and returns nil for a 2xx answer, a *StatusError
+// for other answers, or a network error.
+func (c *Client) PostJSON(ctx context.Context, onionAddr, path string, v any) error {
+	payload, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	resp, err := c.do(ctx, http.MethodPost, onionAddr, path, payload)
+	if err != nil {
+		return err
+	}
+	return readStatus(resp, nil, maxResponseBytes)
+}
+
+// GetJSON fetches path and decodes a 2xx JSON answer of at most limit bytes.
+func (c *Client) GetJSON(ctx context.Context, onionAddr, path string, out any, limit int64) error {
+	resp, err := c.do(ctx, http.MethodGet, onionAddr, path, nil)
+	if err != nil {
+		return err
+	}
+	return readStatus(resp, out, limit)
+}
+
+func readStatus(resp *http.Response, out any, limit int64) error {
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return &ErrNetwork{Op: "read", Err: err}
+	}
+	if int64(len(data)) > limit {
+		return fmt.Errorf("peer response larger than %d bytes", limit)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		msg := strings.TrimSpace(string(data))
+		if len(msg) > 200 {
+			msg = msg[:200]
+		}
+		return &StatusError{Code: resp.StatusCode, Body: msg}
+	}
+	if out != nil {
+		if err := json.Unmarshal(data, out); err != nil {
+			return fmt.Errorf("decode peer response: %w", err)
+		}
+	}
+	return nil
 }
 
 func backoff(attempt int) time.Duration {
