@@ -518,7 +518,11 @@ func (m *Model) activateMainMenu() {
 	pc := &passwordChanger{db: m.db, crypto: m.cryptoSvc}
 	m.settings = NewSettingsModel(u, pc)
 	m.settings.SetSize(m.width, m.height-2)
-	m.settings.SetTorStatus(m.torOnline, 0, "")
+	socks := 0
+	if m.torOnline && m.deps != nil && m.deps.Tor != nil {
+		socks = m.deps.Tor.SocksPort()
+	}
+	m.settings.SetTorStatus(m.torOnline, socks, "")
 	m.settings.SetOnion(m.onionAddr)
 	if m.deps != nil {
 		d := *m.deps
