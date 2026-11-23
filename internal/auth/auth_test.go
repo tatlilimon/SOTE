@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"sote/internal/crypto"
 	"sote/internal/storage"
 )
 
@@ -38,7 +39,7 @@ func TestRegisterValid(t *testing.T) {
 	assert.True(t, len(user.PasswordHash) > 0)
 
 	// Verify encrypted private key can be decrypted back
-	decrypted, err := decryptAES(user.EncryptedPrivateKey, "securepass123")
+	decrypted, err := crypto.New().DecryptAES(user.EncryptedPrivateKey, "securepass123")
 	require.NoError(t, err)
 	assert.NotEmpty(t, decrypted)
 	// Decrypted key should be armored GPG private key
@@ -147,26 +148,104 @@ func TestLoginCaseSensitiveUsername(t *testing.T) {
 	assert.ErrorIs(t, err, ErrInvalidCredentials)
 }
 
-func TestAESRoundtrip(t *testing.T) {
-	plaintext := []byte("this is a secret GPG private key")
-	passphrase := "testpassword123"
-
-	encrypted, err := encryptAES(plaintext, passphrase)
+func TestRegisteredKeyUnlocksWithSharedCrypto(t *testing.T) {
+	// Register used its own AES layout (16-byte salt) while message decryption
+	// used another (32-byte salt), so a freshly registered account could never
+	// decrypt a message. Both now share one implementation.
+	svc := setupTestDB(t)
+	user, err := svc.Register(context.Background(), "alice", "securepass123")
 	require.NoError(t, err)
-	require.NotEmpty(t, encrypted)
 
-	decrypted, err := decryptAES(encrypted, passphrase)
+	cs := crypto.New()
+	id, err := cs.Unlock(user.EncryptedPrivateKey, "securepass123")
 	require.NoError(t, err)
-	assert.Equal(t, plaintext, decrypted)
+	defer id.Close()
+
+	ct, err := cs.EncryptMessage([]byte("hello alice"), user.PublicKey)
+	require.NoError(t, err)
+	plain, err := cs.DecryptMessage(ct, user.EncryptedPrivateKey, "securepass123")
+	require.NoError(t, err)
+	assert.Equal(t, "hello alice", plain)
 }
 
-func TestAESWrongPassphrase(t *testing.T) {
-	plaintext := []byte("secret data")
-	passphrase := "correctpassword"
-
-	encrypted, err := encryptAES(plaintext, passphrase)
+func TestSecondAccountIsRefused(t *testing.T) {
+	svc := setupTestDB(t)
+	ctx := context.Background()
+	_, err := svc.Register(ctx, "alice", "securepass123")
 	require.NoError(t, err)
 
-	_, err = decryptAES(encrypted, "wrongpassword")
-	require.Error(t, err)
+	_, err = svc.Register(ctx, "bob", "securepass123")
+	assert.ErrorIs(t, err, ErrAccountExists)
+}
+
+func TestChangePassword(t *testing.T) {
+	svc := setupTestDB(t)
+	ctx := context.Background()
+	user, err := svc.Register(ctx, "alice", "oldpassword1")
+	require.NoError(t, err)
+
+	// A sent-message copy in the pre-v2 layout: AES under the account password.
+	cs := crypto.New()
+	legacy, err := cs.EncryptAES([]byte("sent before v2"), "oldpassword1")
+	require.NoError(t, err)
+	_, err = storage.SaveMessageMeta(ctx, svc.db, "alice", "bob", append([]byte{storage.BlobLegacySelfAES}, legacy...), "", "")
+	require.NoError(t, err)
+
+	require.NoError(t, svc.ChangePassword(ctx, "alice", "oldpassword1", "newpassword2"))
+
+	_, err = svc.Login(ctx, "alice", "oldpassword1")
+	assert.ErrorIs(t, err, ErrInvalidCredentials)
+	loggedIn, err := svc.Login(ctx, "alice", "newpassword2")
+	require.NoError(t, err)
+
+	id, err := cs.Unlock(loggedIn.EncryptedPrivateKey, "newpassword2")
+	require.NoError(t, err, "private key must open with the new password")
+	defer id.Close()
+	assert.Equal(t, user.PublicKey, id.PublicKey())
+
+	msgs, err := storage.GetMessages(svc.db, "alice", "bob")
+	require.NoError(t, err)
+	require.Len(t, msgs, 1)
+	require.Equal(t, storage.BlobSelfGPG, msgs[0].Message[0], "legacy copy must no longer depend on the password")
+	plain, err := id.Decrypt(string(msgs[0].Message[1:]), nil)
+	require.NoError(t, err)
+	assert.Equal(t, "sent before v2", string(plain))
+}
+
+func TestChangePasswordRejectsWrongCurrentAndKeepsData(t *testing.T) {
+	svc := setupTestDB(t)
+	ctx := context.Background()
+	_, err := svc.Register(ctx, "alice", "oldpassword1")
+	require.NoError(t, err)
+
+	assert.Error(t, svc.ChangePassword(ctx, "alice", "not-the-password", "newpassword2"))
+	assert.ErrorIs(t, svc.ChangePassword(ctx, "alice", "oldpassword1", "short"), ErrWeakPassword)
+	assert.ErrorIs(t, svc.ChangePassword(ctx, "alice", "oldpassword1", "oldpassword1"), ErrSamePassword)
+
+	_, err = svc.Login(ctx, "alice", "oldpassword1")
+	assert.NoError(t, err, "a refused change must leave the old password working")
+}
+
+func TestLoginUpgradesLegacyPrivateKeyLayout(t *testing.T) {
+	svc := setupTestDB(t)
+	ctx := context.Background()
+	user, err := svc.Register(ctx, "alice", "securepass123")
+	require.NoError(t, err)
+
+	cs := crypto.New()
+	priv, err := cs.DecryptAES(user.EncryptedPrivateKey, "securepass123")
+	require.NoError(t, err)
+	// Store the key the way auth.Register did before: no header, 16-byte salt.
+	legacy := legacyBlob16(t, priv, "securepass123")
+	require.NoError(t, storage.UpdateEncryptedPrivateKey(ctx, svc.db, "alice", legacy))
+	require.True(t, crypto.NeedsUpgrade(legacy))
+
+	loggedIn, err := svc.Login(ctx, "alice", "securepass123")
+	require.NoError(t, err)
+	assert.False(t, crypto.NeedsUpgrade(loggedIn.EncryptedPrivateKey))
+	stored, err := storage.GetUser(svc.db, "alice")
+	require.NoError(t, err)
+	assert.False(t, crypto.NeedsUpgrade(stored.PrivateKey))
+	_, err = cs.Unlock(stored.PrivateKey, "securepass123")
+	assert.NoError(t, err)
 }

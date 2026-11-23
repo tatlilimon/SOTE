@@ -50,30 +50,11 @@ type passwordChanger struct {
 	crypto *crypto.Service
 }
 
+// ChangePassword delegates to the auth service, which updates the password
+// hash, the encrypted private key and stored message copies in one
+// transaction. (It used to INSERT a second user row, which always failed.)
 func (pc *passwordChanger) ChangePassword(username, currentPassword, newPassword string) error {
-	su, err := storage.GetUser(pc.db, username)
-	if err != nil {
-		return fmt.Errorf("get user: %w", err)
-	}
-	if err := pc.crypto.VerifyPassword(su.Password, currentPassword); err != nil {
-		return fmt.Errorf("current password is incorrect")
-	}
-	newHash, err := pc.crypto.HashPassword(newPassword)
-	if err != nil {
-		return fmt.Errorf("hash new password: %w", err)
-	}
-	privKey, err := pc.crypto.DecryptAES(su.PrivateKey, currentPassword)
-	if err != nil {
-		return fmt.Errorf("decrypt private key: %w", err)
-	}
-	newEncKey, err := pc.crypto.EncryptAES(privKey, newPassword)
-	if err != nil {
-		return fmt.Errorf("re-encrypt private key: %w", err)
-	}
-	if err := storage.SaveUser(pc.db, username, newHash, newEncKey, su.PublicKey, su.OnionAddress, su.TorrcFilePath); err != nil {
-		return fmt.Errorf("save user: %w", err)
-	}
-	return nil
+	return auth.New(pc.db).ChangePassword(context.Background(), username, currentPassword, newPassword)
 }
 
 type Model struct {

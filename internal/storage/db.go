@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
+	"sync/atomic"
 
 	_ "modernc.org/sqlite"
 )
@@ -42,6 +44,10 @@ type Message struct {
 	Receiver  string
 	Message   []byte
 	Timestamp string
+	// MessageID is the protocol ID (empty for rows written before v2).
+	MessageID string
+	// Delivery is the delivery state of the sender's own copy, or empty.
+	Delivery string
 }
 
 const schemaV1 = `
@@ -93,13 +99,20 @@ func Initialize(dbPath string) (*sql.DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+	restrictFilePermissions(dbPath)
 
 	return db, nil
 }
 
+var memoryDBCounter atomic.Int64
+
 func buildDSN(dbPath string) string {
 	if dbPath == ":memory:" {
-		return "file::memory:?cache=shared" +
+		// A distinct name per call: every Initialize(":memory:") gets its own
+		// database, shared only by that pool's connections. A single shared
+		// "file::memory:" leaked rows between tests and between simulated peers.
+		name := fmt.Sprintf("sote-mem-%d-%d", os.Getpid(), memoryDBCounter.Add(1))
+		return "file:" + name + "?mode=memory&cache=shared" +
 			"&_pragma=journal_mode(WAL)" +
 			"&_pragma=busy_timeout(5000)" +
 			"&_txlock=immediate"
@@ -129,6 +142,11 @@ func migrate(db *sql.DB) error {
 
 	if current < 1 {
 		if err := runMigrationV1(db); err != nil {
+			return err
+		}
+	}
+	if current < 2 {
+		if err := runMigrationV2(db); err != nil {
 			return err
 		}
 	}
@@ -279,7 +297,7 @@ func SaveMessage(db *sql.DB, sender, receiver string, message []byte) error {
 
 // GetMessages retrieves the conversation between two users (bidirectional).
 func GetMessages(db *sql.DB, sender, receiver string) ([]Message, error) {
-	stmt, err := db.Prepare(`SELECT id, sender, receiver, message, timestamp FROM messages
+	stmt, err := db.Prepare(`SELECT id, sender, receiver, message, timestamp, COALESCE(message_id, ''), delivery FROM messages
 		WHERE (sender = ? AND receiver = ?) OR (sender = ? AND receiver = ?)
 		ORDER BY id ASC`)
 	if err != nil {
@@ -296,7 +314,7 @@ func GetMessages(db *sql.DB, sender, receiver string) ([]Message, error) {
 	var messages []Message
 	for rows.Next() {
 		var m Message
-		err := rows.Scan(&m.ID, &m.Sender, &m.Receiver, &m.Message, &m.Timestamp)
+		err := rows.Scan(&m.ID, &m.Sender, &m.Receiver, &m.Message, &m.Timestamp, &m.MessageID, &m.Delivery)
 		if err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
@@ -309,6 +327,7 @@ func GetMessages(db *sql.DB, sender, receiver string) ([]Message, error) {
 }
 
 // GetContactByUsername looks up a contact by their username within all contacts.
+// Deprecated: it ignores the owner; use GetContact.
 func GetContactByUsername(db *sql.DB, contactUsername string) (*Contact, error) {
 	stmt, err := db.Prepare(`SELECT id, username, contactUsername, contactOnionAddress, contactPublicKey
 		FROM contacts WHERE contactUsername = ?`)

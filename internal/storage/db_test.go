@@ -162,7 +162,7 @@ func TestMigration(t *testing.T) {
 	var version int
 	err := db.QueryRow("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1").Scan(&version)
 	require.NoError(t, err)
-	assert.Equal(t, 1, version)
+	assert.Equal(t, 2, version)
 
 	// Verify all 3 tables exist
 	var count int

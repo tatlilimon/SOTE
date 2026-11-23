@@ -2,21 +2,14 @@ package auth
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
-	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
-	"io"
+	"log/slog"
 	"regexp"
 	"strings"
 
-	"github.com/ProtonMail/gopenpgp/v2/crypto"
-	"golang.org/x/crypto/bcrypt"
-	"golang.org/x/crypto/pbkdf2"
-
+	"sote/internal/crypto"
 	"sote/internal/domain"
 	"sote/internal/storage"
 )
@@ -29,22 +22,31 @@ var (
 	ErrDuplicateUser      = errors.New("username already exists")
 	ErrInvalidCredentials = errors.New("invalid username or password")
 	ErrKeyGenFailed       = errors.New("failed to generate GPG key pair")
+	// ErrAccountExists: SOTE runs one account per installation, because the
+	// installation has one onion address and every peer request is routed to
+	// that single identity.
+	ErrAccountExists = errors.New("an account already exists on this device; SOTE supports one account per installation")
+	ErrSamePassword  = errors.New("new password must differ from current password")
 )
+
+// ValidUsername reports whether name is an acceptable SOTE username.
+func ValidUsername(name string) bool { return usernameRegex.MatchString(name) }
 
 // AuthService implements domain.AuthService for user registration and login.
 type AuthService struct {
-	db *sql.DB
+	db     *sql.DB
+	crypto *crypto.Service
 }
 
 // New creates an AuthService backed by the given database.
 func New(db *sql.DB) *AuthService {
-	return &AuthService{db: db}
+	return &AuthService{db: db, crypto: crypto.New()}
 }
 
-// Register creates a new user with the given username and password.
-// It validates input, hashes the password with bcrypt, generates GPG keys,
-// encrypts the private key with AES (PBKDF2-derived key from raw password),
-// and persists the user to storage.
+// Register creates the local account. It validates input, hashes the
+// password with bcrypt, generates a GPG key pair, encrypts the private key
+// with AES-256-GCM under a PBKDF2 key derived from the password, and stores
+// the user. Only one account per installation is allowed.
 func (s *AuthService) Register(ctx context.Context, username, password string) (*domain.User, error) {
 	if !usernameRegex.MatchString(username) {
 		return nil, ErrInvalidUsername
@@ -53,25 +55,32 @@ func (s *AuthService) Register(ctx context.Context, username, password string) (
 		return nil, ErrWeakPassword
 	}
 
-	passwordHash, err := hashPassword(password)
+	switch n, err := storage.CountUsers(ctx, s.db); {
+	case err != nil:
+		return nil, err
+	case n > 0:
+		if _, err := storage.GetUser(s.db, username); err == nil {
+			return nil, ErrDuplicateUser
+		}
+		return nil, ErrAccountExists
+	}
+
+	passwordHash, err := s.crypto.HashPassword(password)
 	if err != nil {
 		return nil, fmt.Errorf("hash password: %w", err)
 	}
 
-	privKey, pubKey, err := generateGPGKeyPair(username)
+	privKey, pubKey, err := crypto.GenerateKeyPairFor("sote", username+"@sote.local")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", ErrKeyGenFailed, err)
 	}
 
-	onionAddr := ""
-	torrcPath := ""
-
-	encryptedPrivKey, err := encryptAES(privKey, password)
+	encryptedPrivKey, err := s.crypto.EncryptAES(privKey, password)
 	if err != nil {
 		return nil, fmt.Errorf("encrypt private key: %w", err)
 	}
 
-	if err := storage.SaveUser(s.db, username, passwordHash, encryptedPrivKey, pubKey, onionAddr, torrcPath); err != nil {
+	if err := storage.SaveUser(s.db, username, passwordHash, encryptedPrivKey, pubKey, "", ""); err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
 			return nil, ErrDuplicateUser
 		}
@@ -79,19 +88,16 @@ func (s *AuthService) Register(ctx context.Context, username, password string) (
 	}
 
 	return &domain.User{
-		Username:           username,
-		PasswordHash:       passwordHash,
+		Username:            username,
+		PasswordHash:        passwordHash,
 		EncryptedPrivateKey: encryptedPrivKey,
-		PublicKey:          pubKey,
-		OnionAddress:       onionAddr,
-		TorrcPath:          torrcPath,
-		RawPassword:        password,
+		PublicKey:           pubKey,
+		RawPassword:         password,
 	}, nil
 }
 
-// Login authenticates a user by username and password.
-// It retrieves the stored bcrypt hash, verifies the password,
-// and returns the user with RawPassword set for session use.
+// Login authenticates a user by username and password. A private key still
+// stored in an older encryption layout is re-encrypted in the current one.
 func (s *AuthService) Login(ctx context.Context, username, password string) (*domain.User, error) {
 	su, err := storage.GetUser(s.db, username)
 	if err != nil {
@@ -101,124 +107,122 @@ func (s *AuthService) Login(ctx context.Context, username, password string) (*do
 		return nil, fmt.Errorf("get user: %w", err)
 	}
 
-	if err := verifyPassword(su.Password, password); err != nil {
+	if err := s.crypto.VerifyPassword(su.Password, password); err != nil {
 		return nil, ErrInvalidCredentials
 	}
 
+	encKey := su.PrivateKey
+	if crypto.NeedsUpgrade(encKey) {
+		if upgraded, err := s.upgradePrivateKey(ctx, username, encKey, password); err != nil {
+			slog.Warn("could not upgrade private key encryption", "error", err)
+		} else {
+			encKey = upgraded
+		}
+	}
+
 	return &domain.User{
-		Username:           su.Username,
-		PasswordHash:       su.Password,
-		EncryptedPrivateKey: su.PrivateKey,
-		PublicKey:          su.PublicKey,
-		OnionAddress:       su.OnionAddress,
-		TorrcPath:          su.TorrcFilePath,
-		RawPassword:        password,
+		Username:            su.Username,
+		PasswordHash:        su.Password,
+		EncryptedPrivateKey: encKey,
+		PublicKey:           su.PublicKey,
+		OnionAddress:        su.OnionAddress,
+		TorrcPath:           su.TorrcFilePath,
+		RawPassword:         password,
 	}, nil
 }
 
-// hashPassword hashes a password using bcrypt with cost ≥ 12.
-func hashPassword(password string) (string, error) {
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), 12)
+func (s *AuthService) upgradePrivateKey(ctx context.Context, username string, encKey []byte, password string) ([]byte, error) {
+	priv, err := s.crypto.DecryptAES(encKey, password)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return string(hash), nil
+	upgraded, err := s.crypto.EncryptAES(priv, password)
+	if err != nil {
+		return nil, err
+	}
+	if err := storage.UpdateEncryptedPrivateKey(ctx, s.db, username, upgraded); err != nil {
+		return nil, err
+	}
+	return upgraded, nil
 }
 
-// verifyPassword checks a password against a bcrypt hash.
-func verifyPassword(hash, password string) error {
-	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
-}
+// ChangePassword replaces the account password in one transaction: the bcrypt
+// hash, the private key (re-encrypted under the new password) and any sent
+// messages still stored as password-encrypted AES copies (converted to copies
+// encrypted to the account's own key, so they no longer depend on a password).
+func (s *AuthService) ChangePassword(ctx context.Context, username, currentPassword, newPassword string) error {
+	if len(newPassword) < 8 {
+		return ErrWeakPassword
+	}
+	if currentPassword == newPassword {
+		return ErrSamePassword
+	}
 
-// generateGPGKeyPair creates a new RSA 2048-bit GPG key pair for the user.
-// Returns armored private and public key bytes.
-func generateGPGKeyPair(username string) (privateKey, publicKey []byte, err error) {
-	key, err := crypto.GenerateKey("sote", username+"@sote.local", "rsa", 2048)
+	su, err := storage.GetUser(s.db, username)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%w: %v", ErrKeyGenFailed, err)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrInvalidCredentials
+		}
+		return fmt.Errorf("get user: %w", err)
+	}
+	if err := s.crypto.VerifyPassword(su.Password, currentPassword); err != nil {
+		return errors.New("current password is incorrect")
 	}
 
-	armoredPriv, err := key.Armor()
+	priv, err := s.crypto.DecryptAES(su.PrivateKey, currentPassword)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%w: armor private key: %v", ErrKeyGenFailed, err)
+		return fmt.Errorf("decrypt private key: %w", err)
 	}
-
-	armoredPub, err := key.GetArmoredPublicKey()
+	id, err := crypto.IdentityFromArmoredPrivateKey(priv)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%w: armor public key: %v", ErrKeyGenFailed, err)
+		return err
 	}
+	defer id.Close()
 
-	return []byte(armoredPriv), []byte(armoredPub), nil
-}
-
-// encryptAES encrypts data using AES-256-GCM with a PBKDF2-derived key from the passphrase.
-// Output format: salt (16 bytes) || nonce (12 bytes) || ciphertext+tag
-func encryptAES(data []byte, passphrase string) ([]byte, error) {
-	salt := make([]byte, 16)
-	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
-		return nil, fmt.Errorf("generate salt: %w", err)
-	}
-
-	key := pbkdf2.Key([]byte(passphrase), salt, 100000, 32, sha256.New)
-
-	block, err := aes.NewCipher(key)
+	newHash, err := s.crypto.HashPassword(newPassword)
 	if err != nil {
-		return nil, fmt.Errorf("create cipher: %w", err)
+		return fmt.Errorf("hash new password: %w", err)
 	}
-
-	gcm, err := cipher.NewGCM(block)
+	newEncKey, err := s.crypto.EncryptAES(priv, newPassword)
 	if err != nil {
-		return nil, fmt.Errorf("create GCM: %w", err)
+		return fmt.Errorf("re-encrypt private key: %w", err)
 	}
 
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, fmt.Errorf("generate nonce: %w", err)
-	}
-
-	ciphertext := gcm.Seal(nil, nonce, data, nil)
-
-	result := make([]byte, 0, len(salt)+len(nonce)+len(ciphertext))
-	result = append(result, salt...)
-	result = append(result, nonce...)
-	result = append(result, ciphertext...)
-
-	return result, nil
-}
-
-// decryptAES reverses encryptAES. It extracts the salt and nonce from the
-// ciphertext, derives the key using PBKDF2, and decrypts with AES-256-GCM.
-func decryptAES(data []byte, passphrase string) ([]byte, error) {
-	if len(data) < 16 {
-		return nil, errors.New("ciphertext too short: missing salt")
-	}
-
-	salt := data[:16]
-	key := pbkdf2.Key([]byte(passphrase), salt, 100000, 32, sha256.New)
-
-	block, err := aes.NewCipher(key)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("create cipher: %w", err)
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := storage.UpdateUserSecrets(ctx, tx, username, newHash, newEncKey); err != nil {
+		return err
 	}
 
-	gcm, err := cipher.NewGCM(block)
+	legacy, err := storage.LegacySelfCopies(ctx, tx, username)
 	if err != nil {
-		return nil, fmt.Errorf("create GCM: %w", err)
+		return err
+	}
+	unreadable := 0
+	for _, m := range legacy {
+		plain, err := s.crypto.DecryptAES(m.Message[1:], currentPassword)
+		if err != nil {
+			// Already unreadable with the current password; nothing to keep.
+			unreadable++
+			continue
+		}
+		armored, err := id.EncryptToSelf(plain)
+		if err != nil {
+			return fmt.Errorf("convert sent message: %w", err)
+		}
+		if err := storage.UpdateMessageBlob(ctx, tx, m.ID, append([]byte{storage.BlobSelfGPG}, armored...)); err != nil {
+			return err
+		}
+	}
+	if unreadable > 0 {
+		slog.Warn("sent messages that were already unreadable were left as they are", "count", unreadable)
 	}
 
-	if len(data) < 16+gcm.NonceSize() {
-		return nil, errors.New("ciphertext too short: missing nonce")
-	}
-
-	nonce := data[16 : 16+gcm.NonceSize()]
-	ciphertext := data[16+gcm.NonceSize():]
-
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
-	if err != nil {
-		return nil, fmt.Errorf("decrypt: %w", err)
-	}
-
-	return plaintext, nil
+	return tx.Commit()
 }
 
 // Compile-time interface check.
