@@ -3,8 +3,8 @@ package tui
 import (
 	"strings"
 
-	tea "charm.land/bubbletea/v2"
 	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
 	"sote/internal/domain"
 )
@@ -42,8 +42,8 @@ func NewLoginModel(onSubmit func(username, password string) (*domain.User, error
 
 	return LoginModel{
 		username: u, password: p,
-		inputs:   []textinput.Model{u, p},
-		focused:  0, onSubmit: onSubmit,
+		inputs:  []textinput.Model{u, p},
+		focused: 0, onSubmit: onSubmit,
 	}
 }
 
@@ -201,7 +201,7 @@ type loginResultMsg struct {
 }
 
 func (m LoginModel) Result() *domain.User { return m.result }
-func (m LoginModel) Done() bool            { return m.done }
+func (m LoginModel) Done() bool           { return m.done }
 func (m *LoginModel) SetSize(width, height int) {
 	m.width = width
 	m.height = height

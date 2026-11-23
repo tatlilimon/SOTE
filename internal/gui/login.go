@@ -42,7 +42,7 @@ type LoginView struct {
 // The OnLoginSuccess callback must be set by the caller before showing the view.
 func NewLoginView(win fyne.Window, authSvc *auth.AuthService) *LoginView {
 	lv := &LoginView{
-		window: win,
+		window:  win,
 		authSvc: authSvc,
 	}
 	lv.buildUI()

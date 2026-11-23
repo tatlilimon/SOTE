@@ -13,11 +13,11 @@ import (
 )
 
 type mockChanger struct {
-	err              error
-	changeCalled     bool
-	lastUsername     string
-	lastCurrentPass  string
-	lastNewPass      string
+	err             error
+	changeCalled    bool
+	lastUsername    string
+	lastCurrentPass string
+	lastNewPass     string
 }
 
 func (m *mockChanger) ChangePassword(username, current, newPass string) error {

@@ -12,13 +12,13 @@ import (
 
 func TestUserJSONRoundtrip(t *testing.T) {
 	u := User{
-		Username:          "alice",
-		PasswordHash:      "$2a$10$hashedpassword",
+		Username:            "alice",
+		PasswordHash:        "$2a$10$hashedpassword",
 		EncryptedPrivateKey: []byte("encrypted-priv-key-data"),
-		PublicKey:         []byte("public-key-data"),
-		OnionAddress:      "alice1234.onion",
-		TorrcPath:         "/tmp/torrc-alice",
-		RawPassword:       "supersecret",
+		PublicKey:           []byte("public-key-data"),
+		OnionAddress:        "alice1234.onion",
+		TorrcPath:           "/tmp/torrc-alice",
+		RawPassword:         "supersecret",
 	}
 
 	data, err := json.Marshal(u)

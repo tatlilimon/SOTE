@@ -4,8 +4,8 @@ import (
 	"strings"
 	"unicode"
 
-	tea "charm.land/bubbletea/v2"
 	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
 	"sote/internal/domain"
 )
@@ -45,8 +45,8 @@ func NewRegisterModel(onSubmit func(username, password string) (*domain.User, er
 
 	return RegisterModel{
 		username: u, password: p, confirmPassword: c,
-		inputs:   []textinput.Model{u, p, c},
-		focused:  0, onSubmit: onSubmit,
+		inputs:  []textinput.Model{u, p, c},
+		focused: 0, onSubmit: onSubmit,
 	}
 }
 
@@ -241,7 +241,7 @@ func isValidUsername(username string) bool {
 }
 
 func (m RegisterModel) Result() *domain.User { return m.result }
-func (m RegisterModel) Done() bool            { return m.done }
+func (m RegisterModel) Done() bool           { return m.done }
 func (m *RegisterModel) SetSize(width, height int) {
 	m.width = width
 	m.height = height

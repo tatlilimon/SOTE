@@ -6,8 +6,8 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"fmt"
-	"io"
 	"github.com/ProtonMail/gopenpgp/v2/crypto"
+	"io"
 )
 
 // User struct to hold user information

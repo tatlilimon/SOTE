@@ -14,15 +14,15 @@ var logger *slog.Logger
 
 // sensitiveKeys are log attribute keys whose values are redacted.
 var sensitiveKeys = map[string]bool{
-	"password":    true,
-	"passwd":      true,
-	"secret":      true,
-	"private_key": true,
-	"privkey":     true,
-	"token":       true,
-	"api_key":     true,
-	"apikey":      true,
-	"auth":        true,
+	"password":      true,
+	"passwd":        true,
+	"secret":        true,
+	"private_key":   true,
+	"privkey":       true,
+	"token":         true,
+	"api_key":       true,
+	"apikey":        true,
+	"auth":          true,
 	"authorization": true,
 }
 

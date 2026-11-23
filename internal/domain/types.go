@@ -3,13 +3,13 @@ package domain
 // User represents an authenticated SOTE user with their cryptographic
 // identity and Tor hidden service configuration.
 type User struct {
-	Username           string `json:"username"`
-	PasswordHash       string `json:"password_hash"`
+	Username            string `json:"username"`
+	PasswordHash        string `json:"password_hash"`
 	EncryptedPrivateKey []byte `json:"encrypted_private_key"`
-	PublicKey          []byte `json:"public_key"`
-	OnionAddress       string `json:"onion_address"`
-	TorrcPath          string `json:"torrc_path"`
-	RawPassword        string `json:"-"`
+	PublicKey           []byte `json:"public_key"`
+	OnionAddress        string `json:"onion_address"`
+	TorrcPath           string `json:"torrc_path"`
+	RawPassword         string `json:"-"`
 }
 
 // Contact represents a saved peer for messaging over Tor.
