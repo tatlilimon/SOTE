@@ -471,10 +471,13 @@ func (n *Node) HandleContactRequest(ctx context.Context, r *peer.ContactRequest)
 	if err != nil {
 		return peer.ErrNotReady
 	}
-	if err := n.opts.Contacts.ReceiveRequest(ctx, sess.username, n.opts.OnionAddress, r, n.opts.Now()); err != nil {
+	queued, err := n.opts.Contacts.ReceiveRequest(ctx, sess.username, n.opts.OnionAddress, r, n.opts.Now())
+	if err != nil {
 		return err
 	}
-	n.emit(Event{Kind: EventContactRequest, Peer: r.FromUsername})
+	if queued {
+		n.emit(Event{Kind: EventContactRequest, Peer: r.FromUsername})
+	}
 	return nil
 }
 

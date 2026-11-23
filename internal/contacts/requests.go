@@ -42,24 +42,26 @@ func BuildRequest(owner, ownOnion, toOnion string, id *crypto.Identity, now time
 // the owner to answer. The signature proves the requester holds the private
 // key it introduces; whether that key belongs to FromOnion is checked when the
 // owner accepts (by fetching the requester's /identity over Tor).
-func (s *Service) ReceiveRequest(ctx context.Context, owner, ownOnion string, r *peer.ContactRequest, now time.Time) error {
+// It reports whether a request was queued (false when the requester is
+// already a contact with the same key, i.e. both sides added each other).
+func (s *Service) ReceiveRequest(ctx context.Context, owner, ownOnion string, r *peer.ContactRequest, now time.Time) (bool, error) {
 	if err := r.Validate(now); err != nil {
-		return err
+		return false, err
 	}
 	if r.ToOnion != ownOnion {
-		return peer.ErrWrongRecipient
+		return false, peer.ErrWrongRecipient
 	}
 	if _, err := crypto.PublicKeyFingerprint([]byte(r.FromPublicKey)); err != nil {
-		return fmt.Errorf("%w: from_public_key", peer.ErrInvalid)
+		return false, fmt.Errorf("%w: from_public_key", peer.ErrInvalid)
 	}
 	if err := crypto.VerifyDetached([]byte(r.FromPublicKey), r.SigningBytes(), r.Signature); err != nil {
-		return peer.ErrBadSignature
+		return false, peer.ErrBadSignature
 	}
 
 	// A request from someone who is already a contact with the same key is
 	// the second half of a mutual add; nothing to ask the owner.
 	if c, err := storage.GetContactByOnion(ctx, s.db, owner, r.FromOnion); err == nil && sameKey(c.PublicKey, []byte(r.FromPublicKey)) {
-		return nil
+		return false, nil
 	}
 
 	_, err := storage.UpsertContactRequest(ctx, s.db, storage.ContactRequest{
@@ -67,9 +69,9 @@ func (s *Service) ReceiveRequest(ctx context.Context, owner, ownOnion string, r 
 		FromOnion: r.FromOnion, FromPublicKey: []byte(r.FromPublicKey),
 	})
 	if errors.Is(err, storage.ErrTooManyRequests) {
-		return peer.ErrTooMany
+		return false, peer.ErrTooMany
 	}
-	return err
+	return err == nil, err
 }
 
 func sameKey(a, b []byte) bool {

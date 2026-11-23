@@ -355,6 +355,31 @@ func TestUndeliveredMessagesWaitForThePeer(t *testing.T) {
 	assert.Equal(t, "are you there?", bob.conversation(t, "alice")[0].Content)
 }
 
+func TestMutualAddDoesNotAskTwice(t *testing.T) {
+	ctx := context.Background()
+	tor := &fakeTor{routes: map[string]string{}}
+	alice := newTestNode(t, tor, "alice")
+	bob := newTestNode(t, tor, "bob")
+	befriend(t, alice, bob)
+
+	var events []Event
+	var mu sync.Mutex
+	alice.OnEvent(func(e Event) { mu.Lock(); events = append(events, e); mu.Unlock() })
+
+	// Bob also adds alice by address: alice already has bob with this key,
+	// so no request is put in front of her.
+	_, err := bob.AddContact(ctx, alice.onion)
+	require.ErrorIs(t, err, contacts.ErrAlreadyContact)
+	reqs, err := alice.PendingRequests(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, reqs)
+	mu.Lock()
+	defer mu.Unlock()
+	for _, e := range events {
+		assert.NotEqual(t, EventContactRequest, e.Kind)
+	}
+}
+
 func TestIdentityEndpointAndSelfAdd(t *testing.T) {
 	ctx := context.Background()
 	tor := &fakeTor{routes: map[string]string{}}
