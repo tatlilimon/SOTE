@@ -11,3 +11,5 @@ logs/
 server.crt
 
 server.key
+# Compiled binary (build with: go build -o sote ./cmd/sote)
+/sote
